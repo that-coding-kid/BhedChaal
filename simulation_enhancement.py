@@ -162,10 +162,13 @@ def create_enhanced_top_view(frame, density_map, previous_density_map, person_de
                         # Calculate direction vector
                         start_point = last_points[0]
                         end_point = last_points[-1]
-                        vector = (end_point[0] - start_point[0], end_point[1] - start_point[1])
+                        if start_point is not None and end_point is not None:
+                            vector = (end_point[0] - start_point[0], end_point[1] - start_point[1])
+                            vector_length = np.sqrt(vector[0]**2 + vector[1]**2)
+                        else:
+                            continue
                         
                         # Only include if the movement is significant
-                        vector_length = np.sqrt(vector[0]**2 + vector[1]**2)
                         if vector_length > 10:  # Minimum movement threshold
                             # Normalize vector to a fixed length for visualization
                             scale = 20.0 / max(vector_length, 1e-5)  # Prevents division by zero
@@ -813,21 +816,28 @@ def create_flow_visualization(frame, density_map_current, density_map_previous, 
     return flow_view
 def enhanced_process_cctv_to_top_view(video_path, output_path=None, calibration_image=None, 
                                       src_points=None, use_tracking=True, yolo_model_size='x', 
-                                      csrnet_model_path=None, density_threshold=0.2, max_points=200):
+                                      csrnet_model_path=None, density_threshold=0.2, max_points=200,
+                                      save_data=True, load_saved_data=True):
     """
-    Enhanced version of process_cctv_to_top_view that includes density points visualization
+    Enhanced version of process_cctv_to_top_view that includes density points visualization,
+    flow analysis, and data saving
     
     Parameters:
     - video_path: Path to input CCTV video
     - output_path: Path for output video (if None, don't save)
     - calibration_image: Path to image for calibration (if None, use first frame)
-    - src_points: Four corner points in the source image (if None, prompt user)
+    - src_points: Four corner points in the source image (if None, prompt user or load from saved data)
     - use_tracking: Whether to enable person tracking
     - yolo_model_size: Size of YOLO model ('n', 's', 'm', 'l', 'x')
     - csrnet_model_path: Path to CSRNet pre-trained weights (if None, use default)
     - density_threshold: Threshold for showing density points (0.0-1.0)
     - max_points: Maximum number of density points to display
+    - save_data: Whether to save area, perspective points, and detection data
+    - load_saved_data: Whether to load previously saved data
     """
+    # Initialize area manager with current video path for data management
+    area_manager = AreaManager(video_path=video_path, save_dir="video_data")
+    
     # Initialize crowd density estimator
     print("Setting up Crowd Density Estimator...")
     try:
@@ -861,6 +871,21 @@ def enhanced_process_cctv_to_top_view(video_path, output_path=None, calibration_
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     
+    # If load_saved_data is True, try to load areas and perspective points first
+    perspective_points_loaded = False
+    areas_loaded = False
+    
+    if load_saved_data:
+        # Try to load areas
+        if area_manager.load_areas():
+            areas_loaded = True
+            print("Successfully loaded areas from saved data")
+        
+        # Try to load perspective points
+        if area_manager.load_perspective_points():
+            perspective_points_loaded = True
+            print("Successfully loaded perspective points from saved data")
+    
     # If no calibration image provided, use the first frame
     if calibration_image is None:
         print("Extracting first frame for calibration...")
@@ -870,23 +895,21 @@ def enhanced_process_cctv_to_top_view(video_path, output_path=None, calibration_
         calibration_image = "first_frame.jpg"
         cv2.imwrite(calibration_image, first_frame)
         
-        # Use the first frame to define areas
-        area_manager = AreaManager(save_dir="bounding_box_data")
-        area_manager.define_areas(first_frame)
-        
-        # Let user define walking areas
-        print("Please define walking areas on the original frame...")
-        area_manager.define_walking_area(first_frame)
-        
-        # Let user define roads
-        print("Please define roads on the original frame...")
-        area_manager.define_road(first_frame)
+        # Define areas if they weren't loaded
+        if not areas_loaded:
+            print("Please define walking areas and roads on the frame...")
+            area_manager.define_areas(first_frame)
         
         # Get perspective transformation matrix
         print("Getting perspective transformation matrix...")
         top_view_size = (800, 600)
-        homography, inv_homography = get_perspective_transform(
-            first_frame, src_points, top_view_size
+        
+        if perspective_points_loaded:
+            # If perspective points were loaded, use them
+            src_points = area_manager.perspective_points
+        
+        homography, inv_homography, src_points = get_perspective_transform(
+            first_frame, src_points, top_view_size, area_manager if save_data else None
         )
         
         # Reset video to start
@@ -897,29 +920,27 @@ def enhanced_process_cctv_to_top_view(video_path, output_path=None, calibration_
         if calibration_frame is None:
             raise ValueError(f"Could not read calibration image {calibration_image}")
         
-        area_manager = AreaManager(save_dir="bounding_box_data")
-        area_manager.define_areas(first_frame)
-        
-        # Let user define walking areas
-        print("Please define walking areas on the calibration image...")
-        area_manager.define_walking_area(calibration_frame)
-        
-        # Let user define roads
-        print("Please define roads on the calibration image...")
-        area_manager.define_road(calibration_frame)
+        # Define areas if they weren't loaded
+        if not areas_loaded:
+            print("Please define walking areas and roads on the calibration image...")
+            area_manager.define_areas(calibration_frame)
         
         # Get perspective transformation matrix
         print("Getting perspective transformation matrix...")
         top_view_size = (800, 600)
-        homography, inv_homography = get_perspective_transform(
-            calibration_frame, src_points, top_view_size
+        
+        if perspective_points_loaded:
+            # If perspective points were loaded, use them
+            src_points = area_manager.perspective_points
+        
+        homography, inv_homography, src_points = get_perspective_transform(
+            calibration_frame, src_points, top_view_size, area_manager if save_data else None
         )
     
     # Setup video writers if output path is provided
     out_top_view = None
     out_original = None
     out_density = None
-    # No longer need separate flow video since it's integrated into top view
 
     if output_path:
         # Create output directory if it doesn't exist
@@ -961,6 +982,7 @@ def enhanced_process_cctv_to_top_view(video_path, output_path=None, calibration_
             if crowd_estimator is not None:
                 os.makedirs(os.path.join(snapshots_dir, "density"))
         print(f"Snapshots will be saved to {snapshots_dir} directory")
+    
     # Interval for saving snapshots (every X frames)
     snapshot_interval = 30  # Save every 30 frames (adjust as needed)
     
@@ -978,9 +1000,11 @@ def enhanced_process_cctv_to_top_view(video_path, output_path=None, calibration_
     print("  '-' - Decrease density threshold (show more points)")
     print("  'p' - Toggle display of density points")
     print("  'f' - Toggle flow visualization (on/off)")
+    print("  's' - Toggle data saving (on/off)")
     print("\nPoints in the top view visualize both detected people and estimated crowd density.")
     print("Yellow stars represent density-based points from CSRNet estimation.")
     print("Flow visualization shows movement direction of crowds and individuals.")
+    print("\nNote: When data saving is ON, data is saved every 20 frames to reduce disk usage.")
     
     # For FPS calculation
     start_time = time.time()
@@ -995,7 +1019,6 @@ def enhanced_process_cctv_to_top_view(video_path, output_path=None, calibration_
     cv2.moveWindow('Enhanced Top View', 700, 50)
     cv2.resizeWindow('Enhanced Top View', 800, 600)
     
-    # Remove flow visualization window - now integrated into top view
     if crowd_estimator is not None:
         cv2.namedWindow('Enhanced Crowd Density Heat Map', cv2.WINDOW_NORMAL)
         cv2.moveWindow('Enhanced Crowd Density Heat Map', 50, 550)
@@ -1006,6 +1029,7 @@ def enhanced_process_cctv_to_top_view(video_path, output_path=None, calibration_
     show_flow = True  # Toggle for showing flow visualization
     current_density_threshold = density_threshold
     current_max_points = max_points
+    current_save_data = save_data  # Toggle for data saving
     
     # Store previous density map for flow calculation
     previous_density_map = None
@@ -1020,6 +1044,15 @@ def enhanced_process_cctv_to_top_view(video_path, output_path=None, calibration_
         elapsed = current_time - frame_time
         frame_time = current_time
         fps_current = 1.0 / elapsed if elapsed > 0 else 0
+        
+        # Check if we have saved data for this frame if load_saved_data is enabled
+        saved_objects = None
+        saved_density_points = None
+        
+        if load_saved_data:
+            saved_objects = area_manager.load_detected_objects(frame_count)
+            if crowd_estimator is not None:
+                saved_density_points = area_manager.load_density_points(frame_count)
         
         # First, estimate crowd density (if available)
         density_map = None
@@ -1053,6 +1086,9 @@ def enhanced_process_cctv_to_top_view(video_path, output_path=None, calibration_
         area_manager.draw_on_frame(frame_with_visualization)
         
         # 3. Create enhanced top view with density map, tracking, flow, and density points
+        # Only save data every 20 frames to reduce disk usage
+        save_current_frame = current_save_data and (frame_count % 20 == 0)
+        
         top_view = create_enhanced_top_view(
             frame, 
             density_map if show_density_points else None,
@@ -1064,10 +1100,10 @@ def enhanced_process_cctv_to_top_view(video_path, output_path=None, calibration_
             top_view_size,
             current_density_threshold,
             current_max_points,
-            show_flow  # Pass the show_flow flag
+            show_flow,  # Pass the show_flow flag
+            frame_count if save_current_frame else None,
+            save_current_frame
         )
-        
-        # 4. We no longer need separate flow visualization as it's integrated into the top view
         
         # Store current density map for next frame
         if density_map is not None:
@@ -1090,6 +1126,11 @@ def enhanced_process_cctv_to_top_view(video_path, output_path=None, calibration_
         # Add density threshold information
         cv2.putText(frame_with_visualization, f"Density threshold: {current_density_threshold:.2f}", (width - 250, 60), 
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+        
+        # Add data saving indicator
+        save_text = "Data Saving: ON" if current_save_data else "Data Saving: OFF"
+        cv2.putText(frame_with_visualization, save_text, (width - 200, height - 50), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0) if current_save_data else (0, 0, 255), 2)
         
         # Add FPS display
         cv2.putText(frame_with_visualization, f"FPS: {fps_current:.1f}", (width - 150, height - 20), 
@@ -1140,6 +1181,10 @@ def enhanced_process_cctv_to_top_view(video_path, output_path=None, calibration_
             # Toggle flow visualization on/off if 'f' is pressed
             show_flow = not show_flow
             print(f"Flow visualization {'enabled' if show_flow else 'disabled'}")
+        elif key == ord('s'):
+            # Toggle data saving on/off if 's' is pressed
+            current_save_data = not current_save_data
+            print(f"Data saving {'enabled' if current_save_data else 'disabled'}")
         elif key == ord('+') or key == ord('='):
             # Increase density threshold (fewer points)
             current_density_threshold = min(current_density_threshold + 0.05, 0.95)
@@ -1212,8 +1257,588 @@ def enhanced_process_cctv_to_top_view(video_path, output_path=None, calibration_
             print(f"  - {base_path}_{source_video_name}_enhanced_density.mp4 (Crowd density heat map)")
         print(f"  - {snapshots_dir} (Directory with snapshots and raw data)")
     
+    # Also print how many frames had data saved
+    if save_data:
+        object_count = len(os.listdir(os.path.join(area_manager.objects_dir)))
+        density_count = len(os.listdir(os.path.join(area_manager.density_dir)))
+        print(f"Data saved for {object_count} object detection frames and {density_count} density frames (every 20th frame).")
+    
     # Return the paths to the simulation videos
     simulation_paths = {
-        "top_view": f"{base_path}_{source_video_name}_enhanced_top_view.mp4" if output_path else None
+        "top_view": f"{base_path}_{source_video_name}_enhanced_top_view.mp4" if output_path else None,
+        "original": f"{base_path}_{source_video_name}_enhanced_original.mp4" if output_path else None,
+        "density": f"{base_path}_{source_video_name}_enhanced_density.mp4" if output_path and crowd_estimator is not None else None
     }
     return simulation_paths
+
+import cv2
+import numpy as np
+import time
+import os
+import json
+from pathlib import Path
+from density_estimation import CrowdDensityEstimator
+from person_detection import PersonDetector
+from person_detection import AreaManager
+from visualization import get_perspective_transform, transform_point, transform_polygon
+
+def create_enhanced_top_view(frame, density_map, previous_density_map, person_detector, homography, area_manager, 
+                            estimated_count, size=(800, 600), 
+                            density_threshold=0.2, max_density_points=200, show_flow=True,
+                            frame_number=None, save_data=False):
+    """
+    Create an enhanced top view visualization with transformed density map, tracking,
+    and additional density points based on crowd estimation
+    
+    Parameters:
+    - frame: Input frame
+    - density_map: Density map from crowd estimator
+    - previous_density_map: Previous frame's density map for flow calculation
+    - person_detector: Instance of PersonDetector
+    - homography: Perspective transformation matrix
+    - area_manager: Instance of AreaManager
+    - estimated_count: Estimated people count
+    - size: Size of the top view image (width, height)
+    - density_threshold: Threshold for showing density points (0.0-1.0)
+    - max_density_points: Maximum number of density points to display
+    - show_flow: Whether to show flow visualization
+    - frame_number: Current frame number for saving data
+    - save_data: Whether to save object and density point data
+    
+    Returns:
+    - top_view: Enhanced top view visualization
+    """
+    # Create a blank top-view image (same as original function)
+    top_view = np.ones((size[1], size[0], 3), dtype=np.uint8) * 255
+    
+    # Draw a grid for reference
+    for x in range(0, size[0], 50):
+        cv2.line(top_view, (x, 0), (x, size[1]), (200, 200, 200), 1)
+    for y in range(0, size[1], 50):
+        cv2.line(top_view, (0, y), (size[0], y), (200, 200, 200), 1)
+    
+    # Transform walking areas to top view
+    top_view_walking_areas = []
+    for area in area_manager.walking_areas:
+        top_view_area = transform_polygon(area, homography)
+        top_view_walking_areas.append(top_view_area)
+        cv2.fillPoly(top_view, [top_view_area], (0, 255, 0, 128))
+        cv2.polylines(top_view, [top_view_area], True, (0, 255, 0), 2)
+    
+    # Transform roads to top view
+    top_view_roads = []
+    for road in area_manager.roads:
+        top_view_road = transform_polygon(road, homography)
+        top_view_roads.append(top_view_road)
+        cv2.fillPoly(top_view, [top_view_road], (0, 0, 255, 128))
+        cv2.polylines(top_view, [top_view_road], True, (0, 0, 255), 2)
+    
+    # New enhanced visualization: Transform density map to top view and generate points
+    density_points = []
+    density_points_data = []  # For saving to JSON
+    
+    if density_map is not None:
+        # Create a colorized version of the density map for visualization background
+        norm_density = density_map / (np.max(density_map) + 1e-10)
+        
+        # Use a custom colormap with high contrast
+        heat_map = np.zeros((256, 1, 3), dtype=np.uint8)
+        # Create gradient from dark blue to cyan to bright green to yellow
+        for i in range(256):
+            if i < 64:  # Dark blue to cyan
+                heat_map[i] = [255, i*4, 0]  # Increasing green component
+            elif i < 128:  # Cyan to bright green
+                heat_map[i] = [255 - (i-64)*4, 255, 0]  # Decreasing blue component
+            elif i < 192:  # Bright green to yellow
+                heat_map[i] = [0, 255, (i-128)*4]  # Increasing red component
+            else:  # Yellow to white
+                heat_map[i] = [(i-192)*4, 255, 255]  # Increasing blue component
+                
+        # Apply custom colormap
+        colorized_density = cv2.applyColorMap((norm_density * 255).astype(np.uint8), cv2.COLORMAP_RAINBOW)
+        
+        # Boost contrast further by applying a brightness adjustment
+        colorized_density = cv2.convertScaleAbs(colorized_density, alpha=1.5, beta=30)
+        
+        # Transform the colorized density map to top view
+        warped_density = cv2.warpPerspective(colorized_density, homography, size)
+        
+        # Apply threshold to density map
+        # Create mask where density is above threshold
+        mask = cv2.warpPerspective((norm_density > 0.05).astype(np.uint8) * 255, homography, size)
+        mask = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
+        
+        # Apply mask to warped density
+        warped_density = cv2.bitwise_and(warped_density, mask)
+        
+        # Blend the warped density map with top view
+        alpha = 0.4  # Slightly less intense than original for better point visibility
+        top_view = cv2.addWeighted(top_view, 1-alpha, warped_density, alpha, 0)
+        
+        # Generate points based on density map
+        warped_norm_density = cv2.warpPerspective(norm_density, homography, size)
+        
+        # Only consider points above the threshold
+        high_density_areas = warped_norm_density > density_threshold
+        if np.any(high_density_areas):
+            # Get coordinates of high-density points
+            y_coords, x_coords = np.where(high_density_areas)
+            
+            # Get values at these coordinates
+            densities = warped_norm_density[high_density_areas]
+            
+            # Create list of (x, y, density) tuples
+            point_data = list(zip(x_coords, y_coords, densities))
+            
+            # Sort by density value (highest first)
+            point_data.sort(key=lambda x: x[2], reverse=True)
+            
+            # Cap to maximum number of points
+            point_data = point_data[:max_density_points]
+            
+            # Store the points for later
+            density_points = [(x, y) for x, y, _ in point_data]
+            
+            # If saving data, prepare density points data
+            if save_data and frame_number is not None and area_manager is not None:
+                for x, y, density_value in point_data:
+                    density_points_data.append({
+                        "top_view": [int(x), int(y)],
+                        "density_value": float(density_value),
+                        "type": "density_point"
+                    })
+    
+    # Transform tracked people to top view and represent them as dots with IDs
+    # First, get the current active IDs (people currently detected in the frame)
+    current_ids = []
+    object_data = []  # For saving to JSON
+    detections, _ = person_detector.detect(frame)
+    for detection in detections:
+        if len(detection) >= 6 and detection[5] is not None:
+            current_ids.append(detection[5])
+    
+    # Store movement vectors for visualization
+    movement_vectors = []
+    
+    if person_detector.tracker_enabled:
+        # First, draw the tracking lines for all historical tracks
+        for track_id, track in person_detector.track_history.items():
+            if len(track) > 1:
+                # Transform track points to top view
+                top_view_track = []
+                for point in track:
+                    top_view_point = transform_point(point, homography)
+                    top_view_track.append(top_view_point)
+                
+                # Draw the track line with the same color as original
+                color = person_detector._get_color_by_id(track_id)
+                for i in range(1, len(top_view_track)):
+                    # Use faded color for tracks that aren't currently visible
+                    line_color = color if track_id in current_ids else (200, 200, 200)
+                    cv2.line(top_view, top_view_track[i-1], top_view_track[i], line_color, 2)
+                
+                # Calculate movement vector for this track (if it has at least 5 points for stability)
+                if track_id in current_ids and len(top_view_track) >= 5:
+                    # Use the last 5 points to calculate the average direction
+                    last_points = top_view_track[-5:]
+                    if len(last_points) >= 2:
+                        # Calculate direction vector
+                        start_point = last_points[0]
+                        end_point = last_points[-1]
+                        if start_point is not None and end_point is not None:
+                            vector = (end_point[0] - start_point[0], end_point[1] - start_point[1])
+                            vector_length = np.sqrt(vector[0]**2 + vector[1]**2)
+                        else:
+                            continue
+                        
+                        # Only include if the movement is significant
+                        if vector_length > 10:  # Minimum movement threshold
+                            # Normalize vector to a fixed length for visualization
+                            scale = 20.0 / max(vector_length, 1e-5)  # Prevents division by zero
+                            norm_vector = (int(vector[0] * scale), int(vector[1] * scale))
+                            
+                            # Save the vector and its starting position (current position)
+                            current_pos = top_view_track[-1]
+                            movement_vectors.append((current_pos, norm_vector, color))
+                
+                # Only draw dots for currently detected people - NO IDs
+                if track_id in current_ids and len(top_view_track) > 0:
+                    current_pos = top_view_track[-1]
+                    # Draw a smaller B&W circle for the person
+                    # First draw a white circle with black outline for visibility
+                    cv2.circle(top_view, current_pos, 6, (0, 0, 0), 1)  # Black outline
+                    cv2.circle(top_view, current_pos, 5, (255, 255, 255), -1)  # White fill
+                    
+                    # If saving data, prepare object data
+                    if save_data and frame_number is not None and area_manager is not None:
+                        # Get the original detection coordinates
+                        orig_detection = None
+                        for det in detections:
+                            if len(det) >= 6 and det[5] == track_id:
+                                orig_detection = det
+                                break
+                        
+                        if orig_detection:
+                            x1, y1, x2, y2, confidence, _ = orig_detection
+                            # Make sure vector and vector_length are defined
+                            if 'vector' in locals() and 'vector_length' in locals() and vector_length > 10:
+                                vector_data = [int(vector[0]), int(vector[1])]
+                            else:
+                                vector_data = [0, 0]
+                                
+                            object_data.append({
+                                "id": track_id,
+                                "orig_bbox": [int(x1), int(y1), int(x2), int(y2)],
+                                "top_view": [current_pos[0], current_pos[1]],
+                                "confidence": float(confidence),
+                                "type": "tracked_person",
+                                "vector": vector_data
+                            })
+    else:
+        # If tracking is not enabled, still use the ID from the detector if available
+        # This uses the detection information we already collected above
+        for detection in detections:
+            # Check if we have ID information
+            if len(detection) >= 6:
+                x1, y1, x2, y2, confidence, track_id = detection
+            else:
+                x1, y1, x2, y2, confidence = detection
+                track_id = None
+                
+            # Calculate center point of the bounding box
+            center_x = (x1 + x2) // 2
+            center_y = (y1 + y2) // 2
+            
+            # Transform center point to top view
+            top_view_point = transform_point((center_x, center_y), homography)
+            
+            # Choose color based on ID if available
+            if track_id is not None:
+                # UPDATED: Use black and white instead of color-coded IDs
+                id_text = str(track_id)
+            else:
+                # Use a default color scheme and sequential numbering
+                # Get the index in the detections list
+                idx = detections.index(detection)
+                id_text = f"D{idx}"  # prefix with 'D' to indicate it's not a tracked ID
+            
+            # UPDATED: Draw a smaller B&W dot for the detection without IDs
+            # First draw a white circle with black outline for visibility
+            cv2.circle(top_view, top_view_point, 6, (0, 0, 0), 1)  # Black outline
+            cv2.circle(top_view, top_view_point, 5, (255, 255, 255), -1)  # White fill
+            
+            # If saving data, prepare object data
+            if save_data and frame_number is not None and area_manager is not None:
+                object_data.append({
+                    "id": track_id if track_id is not None else f"D{idx}",
+                    "orig_bbox": [int(x1), int(y1), int(x2), int(y2)],
+                    "top_view": [top_view_point[0], top_view_point[1]],
+                    "confidence": float(confidence),
+                    "type": "detected_person",
+                    "vector": [0, 0]  # No vector for non-tracked objects
+                })
+    
+    # Always show average flow with a big center arrow, regardless of tracked points
+    # Calculate the center of the view
+    center_x, center_y = size[0] // 2, size[1] // 2
+    center = (center_x, center_y)
+    
+    # Create a persistent big flow arrow at the center
+    arrow_length = 80  # Make it quite large and prominent
+    
+    # If we have movement vectors, calculate direction from them
+    if len(movement_vectors) > 0:
+        # Calculate average movement vector across all tracks
+        avg_vector_x = sum(vector[0] for _, vector, _ in movement_vectors) / len(movement_vectors)
+        avg_vector_y = sum(vector[1] for _, vector, _ in movement_vectors) / len(movement_vectors)
+        
+        # Normalize and scale to fixed length
+        vector_length = np.sqrt(avg_vector_x**2 + avg_vector_y**2)
+        if vector_length > 0:
+            normalized_x = avg_vector_x / vector_length * arrow_length
+            normalized_y = avg_vector_y / vector_length * arrow_length
+        else:
+            # If no movement, use a default upward direction
+            normalized_x, normalized_y = 0, -arrow_length
+    
+    # If we don't have movement vectors but have density change data, use that
+    elif previous_density_map is not None and density_map is not None:
+        # Calculate density change
+        norm_density_current = density_map / (np.max(density_map) + 1e-10)
+        norm_density_previous = previous_density_map / (np.max(previous_density_map) + 1e-10)
+        
+        # Find regions with significant change
+        density_diff = norm_density_current - norm_density_previous
+        
+        # Warp the difference map to top view
+        warped_diff = cv2.warpPerspective(density_diff, homography, size)
+        
+        # Find significant decrease and increase regions
+        decrease_mask = (warped_diff < -0.1)
+        increase_mask = (warped_diff > 0.1)
+        
+        # Calculate direction if we have significant changes
+        if np.any(decrease_mask) and np.any(increase_mask):
+            # Find centers of decrease and increase regions
+            y_dec, x_dec = np.where(decrease_mask)
+            y_inc, x_inc = np.where(increase_mask)
+            
+            if len(x_dec) > 0 and len(x_inc) > 0:
+                # Calculate centers
+                center_dec_x, center_dec_y = np.mean(x_dec), np.mean(y_dec)
+                center_inc_x, center_inc_y = np.mean(x_inc), np.mean(y_inc)
+                
+                # Calculate direction vector
+                dir_x = center_inc_x - center_dec_x
+                dir_y = center_inc_y - center_dec_y
+                
+                # Normalize and scale
+                vector_length = np.sqrt(dir_x**2 + dir_y**2)
+                if vector_length > 0:
+                    normalized_x = dir_x / vector_length * arrow_length
+                    normalized_y = dir_y / vector_length * arrow_length
+                else:
+                    # Default if no clear direction
+                    normalized_x, normalized_y = 0, -arrow_length
+            else:
+                # Default
+                normalized_x, normalized_y = 0, -arrow_length
+        else:
+            # Default
+            normalized_x, normalized_y = 0, -arrow_length
+    else:
+        # Default if we have neither
+        normalized_x, normalized_y = 0, -arrow_length
+    
+    # Calculate end point for the arrow
+    end_point = (int(center[0] + normalized_x), int(center[1] + normalized_y))
+    
+    # Draw a very prominent arrow with clear contrast
+    # First draw a thicker black outline
+    cv2.arrowedLine(top_view, center, end_point, (0, 0, 0), 10, tipLength=0.3, line_type=cv2.LINE_AA)
+    # Then draw a slightly thinner white arrow
+    cv2.arrowedLine(top_view, center, end_point, (255, 255, 255), 6, tipLength=0.3, line_type=cv2.LINE_AA)
+    # Finally add a colored center for visibility
+    cv2.arrowedLine(top_view, center, end_point, (0, 255, 255), 3, tipLength=0.3, line_type=cv2.LINE_AA)
+    
+    # Add a prominent label
+    cv2.putText(top_view, "FLOW", (center[0] + 10, center[1] - 10),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 0), 4)
+    cv2.putText(top_view, "FLOW", (center[0] + 10, center[1] - 10),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+        
+    # Identify and visualize crowd clusters based on density changes
+    if previous_density_map is not None and density_map is not None:
+        # Normalize density maps
+        norm_density_current = density_map / (np.max(density_map) + 1e-10)
+        norm_density_previous = previous_density_map / (np.max(previous_density_map) + 1e-10)
+        
+        # Create binary masks for high density areas
+        current_high_density = norm_density_current > 0.4
+        previous_high_density = norm_density_previous > 0.4
+        
+        # Warp to top view
+        warped_current = cv2.warpPerspective(current_high_density.astype(np.uint8), homography, size)
+        warped_previous = cv2.warpPerspective(previous_high_density.astype(np.uint8), homography, size)
+        
+        # Find contours in current density to identify clusters
+        contours, _ = cv2.findContours(warped_current.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        # Filter contours by area to find significant clusters
+        min_area = 100  # Minimum area to consider as a cluster
+        clusters_data = []  # For saving to JSON
+        
+        for i, contour in enumerate(contours):
+            area = cv2.contourArea(contour)
+            if area > min_area:
+                # Draw cluster outline
+                cv2.drawContours(top_view, [contour], -1, (0, 0, 0), 2)
+                
+                # Get the centroid of the cluster
+                M = cv2.moments(contour)
+                if M['m00'] != 0:
+                    cx = int(M['m10'] / M['m00'])
+                    cy = int(M['m01'] / M['m00'])
+                    
+                    # Label the cluster
+                    cluster_id = f"C{i+1}"
+                    cv2.putText(top_view, cluster_id, (cx, cy), 
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 2)
+                    cv2.putText(top_view, cluster_id, (cx, cy), 
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+                    
+                    # Find matching cluster in previous frame
+                    # This is a simplified approach - more sophisticated tracking could be used
+                    prev_mask = np.zeros_like(warped_previous)
+                    cv2.drawContours(prev_mask, [contour], -1, 1, -1)  # -1 means fill
+                    
+                    overlap = cv2.bitwise_and(prev_mask, warped_previous)
+                    
+                    cluster_vector = [0, 0]  # Default - no movement
+                    
+                    if np.any(overlap):
+                        # Found a match, calculate the movement
+                        prev_moments = cv2.moments(overlap)
+                        if prev_moments['m00'] != 0:
+                            prev_cx = int(prev_moments['m10'] / prev_moments['m00'])
+                            prev_cy = int(prev_moments['m01'] / prev_moments['m00'])
+                            
+                            # Draw movement vector for this cluster
+                            if abs(cx - prev_cx) > 3 or abs(cy - prev_cy) > 3:  # Only if significant movement
+                                # Draw arrow showing cluster movement
+                                cv2.arrowedLine(top_view, (prev_cx, prev_cy), (cx, cy), 
+                                              (0, 0, 0), 3, tipLength=0.3)
+                                cv2.arrowedLine(top_view, (prev_cx, prev_cy), (cx, cy), 
+                                              (0, 255, 255), 2, tipLength=0.3)
+                                
+                                # Record movement vector
+                                cluster_vector = [cx - prev_cx, cy - prev_cy]
+                    
+                    # If saving data, add this cluster
+                    if save_data and frame_number is not None and area_manager is not None:
+                        cluster_points = []
+                        for point in contour:
+                            x, y = point[0]
+                            cluster_points.append([int(x), int(y)])
+                            
+                        clusters_data.append({
+                            "id": cluster_id,
+                            "centroid": [cx, cy],
+                            "area": float(area),
+                            "contour": cluster_points,
+                            "vector": cluster_vector,
+                            "type": "crowd_cluster"
+                        })
+    
+    # Add density flow visualization if we have previous density map
+    if show_flow and previous_density_map is not None and density_map is not None:
+        # Calculate density change
+        norm_density_current = density_map / (np.max(density_map) + 1e-10)
+        norm_density_previous = previous_density_map / (np.max(previous_density_map) + 1e-10)
+        
+        # Find regions with significant change
+        density_diff = norm_density_current - norm_density_previous
+        
+        # Warp the difference map to top view
+        warped_diff = cv2.warpPerspective(density_diff, homography, size)
+        
+        # Find significant decrease and increase regions
+        decrease_mask = (warped_diff < -0.1)
+        increase_mask = (warped_diff > 0.1)
+        
+        # Only process if we have significant changes
+        if np.any(decrease_mask) and np.any(increase_mask):
+            # Find centers of decrease and increase regions
+            y_dec, x_dec = np.where(decrease_mask)
+            y_inc, x_inc = np.where(increase_mask)
+            
+            if len(x_dec) > 0 and len(x_inc) > 0:
+                # Calculate centers
+                center_dec = (int(np.mean(x_dec)), int(np.mean(y_dec)))
+                center_inc = (int(np.mean(x_inc)), int(np.mean(y_inc)))
+                
+                # Draw a flow arrow from decrease center to increase center
+                cv2.arrowedLine(top_view, center_dec, center_inc, (255, 255, 255), 4, tipLength=0.3)
+                cv2.arrowedLine(top_view, center_dec, center_inc, (0, 255, 255), 2, tipLength=0.3)
+                
+                # Label
+                cv2.putText(top_view, "Crowd Flow", 
+                           ((center_dec[0] + center_inc[0])//2 + 5, 
+                            (center_dec[1] + center_inc[1])//2 - 5),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+                
+                # Save flow data
+                if save_data and frame_number is not None and area_manager is not None:
+                    flow_data = {
+                        "source": [center_dec[0], center_dec[1]],
+                        "target": [center_inc[0], center_inc[1]],
+                        "vector": [center_inc[0] - center_dec[0], center_inc[1] - center_dec[1]],
+                        "type": "density_flow"
+                    }
+                    
+                    # Append to density_points_data as it will be saved with the same function
+                    density_points_data.append(flow_data)
+    
+    # ENHANCEMENT: Draw density-based points in the EXACT SAME style as YOLO points
+    # Using white circles with black outlines to match YOLO detection points
+    for i, point in enumerate(density_points):
+        # Draw exactly the same size and style as YOLO points (white with black outline)
+        cv2.circle(top_view, point, 6, (0, 0, 0), 1)  # Black outline
+        cv2.circle(top_view, point, 5, (255, 255, 255), -1)  # White fill
+    
+    # Add legend for clusters
+    cv2.rectangle(top_view, (size[0]-240, 10), (size[0]-10, 225), (255, 255, 255), -1)
+    cv2.rectangle(top_view, (size[0]-240, 10), (size[0]-10, 225), (0, 0, 0), 1)
+    cv2.putText(top_view, "Legend:", (size[0]-230, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
+    
+    # Walking area
+    cv2.rectangle(top_view, (size[0]-220, 50), (size[0]-200, 60), (0, 255, 0), -1)
+    cv2.putText(top_view, "Walking Area", (size[0]-190, 55), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
+    
+    # Road
+    cv2.rectangle(top_view, (size[0]-220, 70), (size[0]-200, 80), (0, 0, 255), -1)
+    cv2.putText(top_view, "Road", (size[0]-190, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
+    
+    # UPDATED: Active person - black and white
+    cv2.circle(top_view, (size[0]-210, 100), 6, (0, 0, 0), 1)  # Black outline
+    cv2.circle(top_view, (size[0]-210, 100), 5, (255, 255, 255), -1)  # White fill
+    cv2.putText(top_view, "Active Person", (size[0]-190, 105), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
+    
+    # Historical track
+    cv2.line(top_view, (size[0]-220, 120), (size[0]-200, 120), (200, 200, 200), 2)
+    cv2.putText(top_view, "Historical Track", (size[0]-190, 125), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
+    
+    # CHANGED: Density point (white circle with black outline)
+    x, y = size[0]-210, 140
+    # First draw the outline
+    cv2.circle(top_view, (x, y), 8, (0, 0, 0), 2)  # Black outline
+    # Then fill with white
+    cv2.circle(top_view, (x, y), 6, (255, 255, 255), -1)  # White fill
+    cv2.putText(top_view, "Density Point", (size[0]-190, 145), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
+    
+    # Heat map legend - updated color description
+    cv2.rectangle(top_view, (size[0]-220, 160), (size[0]-200, 170), (0, 255, 255), -1) # Cyan color for heat map
+    cv2.putText(top_view, "Density Heat Map", (size[0]-190, 165), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
+    
+    # Add Individual Flow vector legend
+    cv2.arrowedLine(top_view, (size[0]-220, 180), (size[0]-190, 180), (0, 0, 0), 3, tipLength=0.3)
+    cv2.arrowedLine(top_view, (size[0]-220, 180), (size[0]-190, 180), (255, 255, 255), 2, tipLength=0.3)
+    cv2.putText(top_view, "Individual Flow", (size[0]-190, 185), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
+    
+    # Add Average Flow vector legend
+    cv2.arrowedLine(top_view, (size[0]-220, 200), (size[0]-190, 200), (0, 255, 255), 3, tipLength=0.3)
+    cv2.putText(top_view, "Average Flow", (size[0]-190, 205), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
+    
+    # Current count
+    num_active_people = len([d for d in detections if len(d) >= 6 and d[5] is not None])
+    cv2.putText(top_view, f"Active People: {num_active_people}", (10, size[1] - 70), 
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 2)
+    
+    # Add density points count
+    cv2.putText(top_view, f"Density Points: {len(density_points)}", (10, size[1] - 40), 
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 2)
+    
+    # Add density count information
+    cv2.putText(top_view, f"Estimated people: {estimated_count*0.05:.1f}", (10, size[1] - 10), 
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+    
+    # Save data if requested
+    if save_data and frame_number is not None and area_manager is not None:
+        # Save detected objects
+        if object_data:
+            area_manager.save_detected_objects(frame_number, object_data)
+        
+        # Save density points
+        if density_points_data:
+            area_manager.save_density_points(frame_number, density_points_data)
+        
+        # Save clusters data as special density points
+        if 'clusters_data' in locals() and clusters_data:
+            # Append clusters to density points data
+            for cluster in clusters_data:
+                density_points_data.append(cluster)
+            
+            # Save updated density points data
+            area_manager.save_density_points(frame_number, density_points_data)
+    
+    return top_view

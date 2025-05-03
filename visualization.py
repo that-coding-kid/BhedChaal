@@ -2,23 +2,40 @@ import cv2
 import numpy as np
 import time
 import os
+import json
+from pathlib import Path
 from density_estimation import CrowdDensityEstimator
-from person_detection import PersonDetector, AreaManager
+from person_detection import PersonDetector
+from person_detection import AreaManager
 
-def get_perspective_transform(image, src_points=None, dst_size=(800, 600)):
+def get_perspective_transform(image, src_points=None, dst_size=(800, 600), area_manager=None):
     """
-    Get perspective transformation matrix from user-selected points
+    Get perspective transformation matrix from user-selected points or load from saved data
     
     Parameters:
     - image: Source image
     - src_points: Four points in the source image (if None, prompt user to select)
     - dst_size: Size of the destination (top-view) image
+    - area_manager: Instance of AreaManager to save/load perspective points
     
     Returns:
     - perspective_matrix: Homography matrix for perspective transformation
     - inv_perspective_matrix: Inverse homography matrix
+    - src_points: The source points used (loaded or selected)
     """
-    if src_points is None:
+    # First try to load perspective points if area_manager is provided
+    loaded_points = False
+    if area_manager is not None:
+        try:
+            if area_manager.load_perspective_points():
+                src_points = area_manager.perspective_points
+                loaded_points = True
+                print("Loaded perspective points from saved data")
+        except Exception as e:
+            print(f"Error loading perspective points: {e}")
+    
+    # If src_points is None or loading failed, let user select 4 points
+    if src_points is None or len(src_points) != 4:
         # Let user select 4 points
         src_points = []
         img_copy = image.copy()
@@ -49,6 +66,11 @@ def get_perspective_transform(image, src_points=None, dst_size=(800, 600)):
         
         cv2.waitKey(500)  # Small delay
         cv2.destroyAllWindows()
+        
+        # Save the perspective points if area_manager is provided
+        if area_manager is not None:
+            area_manager.save_perspective_points(src_points)
+            print("Saved perspective points")
     
     # Destination points (top-view rectangle)
     margin = 50  # margin from the edges
@@ -67,7 +89,7 @@ def get_perspective_transform(image, src_points=None, dst_size=(800, 600)):
     perspective_matrix = cv2.getPerspectiveTransform(src_points, dst_points)
     inv_perspective_matrix = cv2.getPerspectiveTransform(dst_points, src_points)
     
-    return perspective_matrix, inv_perspective_matrix
+    return perspective_matrix, inv_perspective_matrix, src_points
 
 def transform_point(point, matrix):
     """Transform a point using the given homography matrix"""
@@ -90,7 +112,8 @@ def transform_polygon(polygon, matrix):
         transformed_polygon.append(transformed_point)
     return np.array(transformed_polygon)
 
-def create_top_view(frame, density_map, person_detector, homography, area_manager, estimated_count, size=(800, 600)):
+def create_top_view(frame, density_map, person_detector, homography, area_manager, estimated_count, 
+                    size=(800, 600), frame_number=None, save_data=False):
     """
     Create a top view visualization with transformed density map and tracking
     
@@ -102,6 +125,8 @@ def create_top_view(frame, density_map, person_detector, homography, area_manage
     - area_manager: Instance of AreaManager
     - estimated_count: Estimated people count
     - size: Size of the top view image (width, height)
+    - frame_number: Current frame number for saving data
+    - save_data: Whether to save object and density point data
     
     Returns:
     - top_view: Top view visualization
@@ -132,6 +157,7 @@ def create_top_view(frame, density_map, person_detector, homography, area_manage
         cv2.polylines(top_view, [top_view_road], True, (0, 0, 255), 2)
     
     # Transform density map to top view if available
+    density_points_data = []
     if density_map is not None:
         # Create a colorized version of the density map for visualization
         norm_density = density_map / (np.max(density_map) + 1e-10)
@@ -151,11 +177,37 @@ def create_top_view(frame, density_map, person_detector, homography, area_manage
         # Blend the warped density map with top view
         alpha = 0.6
         top_view = cv2.addWeighted(top_view, 1-alpha, warped_density, alpha, 0)
+        
+        # NEW: Extract density points for saving
+        if save_data and frame_number is not None:
+            # Find areas with significant density
+            high_density_areas = norm_density > 0.2  # Threshold value
+            if np.any(high_density_areas):
+                y_coords, x_coords = np.where(high_density_areas)
+                densities = norm_density[high_density_areas]
+                
+                # Create list of top view coordinates with density values
+                for i, (x, y, density_value) in enumerate(zip(x_coords, y_coords, densities)):
+                    # Limit to 100 points to avoid excessive data
+                    if i >= 100:
+                        break
+                        
+                    # Transform point to top view
+                    top_view_point = transform_point((int(x), int(y)), homography)
+                    
+                    # Add to density points data
+                    density_points_data.append({
+                        "top_view": [top_view_point[0], top_view_point[1]],
+                        "original": [int(x), int(y)],
+                        "density_value": float(density_value)
+                    })
     
     # Transform tracked people to top view and represent them as dots with IDs
     # First, get the current active IDs (people currently detected in the frame)
     current_ids = []
+    object_data = []
     detections, _ = person_detector.detect(frame)
+    
     for detection in detections:
         if len(detection) >= 6 and detection[5] is not None:
             current_ids.append(detection[5])
@@ -222,6 +274,15 @@ def create_top_view(frame, density_map, person_detector, homography, area_manage
             cv2.putText(top_view, id_text, 
                         (top_view_point[0] + 10, top_view_point[1] + 5),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 2)
+            
+            # NEW: Save object data if requested
+            if save_data and frame_number is not None:
+                object_data.append({
+                    "id": track_id if track_id is not None else f"D{idx}",
+                    "orig_bbox": [int(x1), int(y1), int(x2), int(y2)],
+                    "top_view": [top_view_point[0], top_view_point[1]],
+                    "confidence": float(confidence)
+                })
     
     # Add legend
     cv2.rectangle(top_view, (size[0]-240, 10), (size[0]-10, 150), (255, 255, 255), -1)
@@ -253,9 +314,21 @@ def create_top_view(frame, density_map, person_detector, homography, area_manage
     cv2.putText(top_view, f"Estimated people count: {estimated_count*0.05:.1f}", (10, size[1] - 20), 
                 cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
     
+    # Save data if requested
+    if save_data and frame_number is not None and area_manager is not None:
+        # Save detected objects
+        if object_data:
+            area_manager.save_detected_objects(frame_number, object_data)
+        
+        # Save density points
+        if density_points_data:
+            area_manager.save_density_points(frame_number, density_points_data)
+    
     return top_view
 
-def process_cctv_to_top_view(video_path, output_path=None, calibration_image=None, src_points=None, use_tracking=True, yolo_model_size='x', csrnet_model_path=None):
+def process_cctv_to_top_view(video_path, output_path=None, calibration_image=None, src_points=None, 
+                             use_tracking=True, yolo_model_size='x', csrnet_model_path=None,
+                             save_data=True, load_saved_data=True):
     """
     Process CCTV footage to create a top-view simulation with crowd density estimation and YOLOv8 person detection
     
@@ -263,11 +336,16 @@ def process_cctv_to_top_view(video_path, output_path=None, calibration_image=Non
     - video_path: Path to input CCTV video
     - output_path: Path for output video (if None, don't save)
     - calibration_image: Path to image for calibration (if None, use first frame)
-    - src_points: Four corner points in the source image (if None, prompt user)
+    - src_points: Four corner points in the source image (if None, prompt user or load from saved data)
     - use_tracking: Whether to enable person tracking
     - yolo_model_size: Size of YOLO model ('n', 's', 'm', 'l', 'x')
     - csrnet_model_path: Path to CSRNet pre-trained weights (if None, use default)
+    - save_data: Whether to save area, perspective points, and detection data
+    - load_saved_data: Whether to load previously saved data
     """
+    # Initialize area manager with current video path for data management
+    area_manager = AreaManager(video_path=video_path, save_dir="video_data")
+    
     # Initialize crowd density estimator
     print("Setting up Crowd Density Estimator...")
     try:
@@ -301,6 +379,21 @@ def process_cctv_to_top_view(video_path, output_path=None, calibration_image=Non
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     
+    # If load_saved_data is True, try to load areas and perspective points first
+    perspective_points_loaded = False
+    areas_loaded = False
+    
+    if load_saved_data:
+        # Try to load areas
+        if area_manager.load_areas():
+            areas_loaded = True
+            print("Successfully loaded areas from saved data")
+        
+        # Try to load perspective points
+        if area_manager.load_perspective_points():
+            perspective_points_loaded = True
+            print("Successfully loaded perspective points from saved data")
+    
     # If no calibration image provided, use the first frame
     if calibration_image is None:
         print("Extracting first frame for calibration...")
@@ -310,23 +403,21 @@ def process_cctv_to_top_view(video_path, output_path=None, calibration_image=Non
         calibration_image = "first_frame.jpg"
         cv2.imwrite(calibration_image, first_frame)
         
-        # Use the first frame to define areas
-        area_manager = AreaManager(save_dir="bounding_box_data")
-        area_manager.define_areas(frame)
-        
-        # Let user define walking areas
-        print("Please define walking areas on the original frame...")
-        area_manager.define_walking_area(first_frame)
-        
-        # Let user define roads
-        print("Please define roads on the original frame...")
-        area_manager.define_road(first_frame)
+        # Define areas if they weren't loaded
+        if not areas_loaded:
+            print("Please define walking areas and roads on the frame...")
+            area_manager.define_areas(first_frame)
         
         # Get perspective transformation matrix
         print("Getting perspective transformation matrix...")
         top_view_size = (800, 600)
-        homography, inv_homography = get_perspective_transform(
-            first_frame, src_points, top_view_size
+        
+        if perspective_points_loaded:
+            # If perspective points were loaded, use them
+            src_points = area_manager.perspective_points
+        
+        homography, inv_homography, src_points = get_perspective_transform(
+            first_frame, src_points, top_view_size, area_manager if save_data else None
         )
         
         # Reset video to start
@@ -337,29 +428,24 @@ def process_cctv_to_top_view(video_path, output_path=None, calibration_image=Non
         if calibration_frame is None:
             raise ValueError(f"Could not read calibration image {calibration_image}")
         
-        area_manager = AreaManager(save_dir="bounding_box_data")
-        area_manager.define_areas(frame)
-        
-        # Let user define walking areas
-        print("Please define walking areas on the calibration image...")
-        area_manager.define_walking_area(calibration_frame)
-        
-        # Let user define roads
-        print("Please define roads on the calibration image...")
-        area_manager.define_road(calibration_frame)
+        # Define areas if they weren't loaded
+        if not areas_loaded:
+            print("Please define walking areas and roads on the calibration image...")
+            area_manager.define_areas(calibration_frame)
         
         # Get perspective transformation matrix
         print("Getting perspective transformation matrix...")
         top_view_size = (800, 600)
-        homography, inv_homography = get_perspective_transform(
-            calibration_frame, src_points, top_view_size
+        
+        if perspective_points_loaded:
+            # If perspective points were loaded, use them
+            src_points = area_manager.perspective_points
+        
+        homography, inv_homography, src_points = get_perspective_transform(
+            calibration_frame, src_points, top_view_size, area_manager if save_data else None
         )
     
     # Setup video writers if output path is provided
- # This code should be added to the process_cctv_to_top_view function in visualization.py
-# Replace the existing video writer setup with this code
-
-# Setup video writers if output path is provided
     out_top_view = None
     out_original = None
     out_density = None
@@ -390,7 +476,7 @@ def process_cctv_to_top_view(video_path, output_path=None, calibration_image=Non
         
         print(f"Output videos will be saved with prefix: {source_video_name}")
 
-# Create directories for saving snapshots
+    # Create directories for saving snapshots
     snapshots_dir = None
     if output_path:
         # Use the source video name in the snapshots directory name
@@ -404,6 +490,7 @@ def process_cctv_to_top_view(video_path, output_path=None, calibration_image=Non
             if crowd_estimator is not None:
                 os.makedirs(os.path.join(snapshots_dir, "density"))
         print(f"Snapshots will be saved to {snapshots_dir} directory")
+    
     # Interval for saving snapshots (every X frames)
     snapshot_interval = 30  # Save every 30 frames (adjust as needed)
     
@@ -417,8 +504,10 @@ def process_cctv_to_top_view(video_path, output_path=None, calibration_image=Non
     print("  'q' - Quit the application")
     print("  'r' - Reset heat maps")
     print("  't' - Toggle tracking visualization (on/off)")
+    print("  's' - Toggle data saving (on/off)")
     print("\nPoints in the top view only appear for currently detected people.")
     print("Historical tracks are shown in gray, active tracks in color.")
+    print("\nNote: When data saving is ON, data is saved every 20 frames to reduce disk usage.")
     
     # For FPS calculation
     start_time = time.time()
@@ -438,6 +527,9 @@ def process_cctv_to_top_view(video_path, output_path=None, calibration_image=Non
         cv2.moveWindow('Crowd Density Heat Map', 50, 550)
         cv2.resizeWindow('Crowd Density Heat Map', 640, 480)
     
+    # Toggle for data saving (can be toggled during processing)
+    current_save_data = save_data
+    
     while cap.isOpened():
         ret, frame = cap.read()
         if not ret:
@@ -449,7 +541,19 @@ def process_cctv_to_top_view(video_path, output_path=None, calibration_image=Non
         frame_time = current_time
         fps_current = 1.0 / elapsed if elapsed > 0 else 0
         
-        # First, estimate crowd density (if available)
+        # First, check if we have saved detection data for this frame
+        saved_objects = None
+        saved_density_points = None
+        
+        if load_saved_data:
+            saved_objects = area_manager.load_detected_objects(frame_count)
+            if crowd_estimator is not None:
+                saved_density_points = area_manager.load_density_points(frame_count)
+        
+        # If we have saved data for this frame, we can skip detection and use saved data
+        # However, we still need to process the frame for visualization purposes
+        
+        # Estimate crowd density (if available)
         density_map = None
         estimated_count = 0
         colorized_density = None
@@ -461,7 +565,7 @@ def process_cctv_to_top_view(video_path, output_path=None, calibration_image=Non
                 print(f"Error in density estimation: {e}")
                 # Continue without density estimation for this frame
         
-        # Then, detect and track individual people with YOLOv8
+        # Detect and track individual people with YOLOv8
         detections, frame_with_detections = person_detector.detect(frame)
         
         # Create a combined visualization
@@ -481,7 +585,20 @@ def process_cctv_to_top_view(video_path, output_path=None, calibration_image=Non
         area_manager.draw_on_frame(frame_with_visualization)
         
         # 3. Create top view with density map and tracking
-        top_view = create_top_view(frame, density_map, person_detector, homography, area_manager, estimated_count, top_view_size)
+        # Only save data every 20 frames to reduce disk usage
+        save_current_frame = current_save_data and (frame_count % 20 == 0)
+        
+        top_view = create_top_view(
+            frame, 
+            density_map, 
+            person_detector, 
+            homography, 
+            area_manager, 
+            estimated_count, 
+            top_view_size,
+            frame_count if save_current_frame else None,
+            save_current_frame
+        )
         
         # Add detection information to original view
         # Now includes the number of people with IDs
@@ -492,6 +609,11 @@ def process_cctv_to_top_view(video_path, output_path=None, calibration_image=Non
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
         cv2.putText(frame_with_visualization, f"Density estimate: {estimated_count*0.05:.1f}", (10, height - 20), 
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+        
+        # Add data saving indicator
+        save_text = "Data Saving: ON" if current_save_data else "Data Saving: OFF"
+        cv2.putText(frame_with_visualization, save_text, (width - 200, height - 50), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0) if current_save_data else (0, 0, 255), 2)
         
         # Add FPS display
         cv2.putText(frame_with_visualization, f"FPS: {fps_current:.1f}", (width - 150, height - 20), 
@@ -534,6 +656,10 @@ def process_cctv_to_top_view(video_path, output_path=None, calibration_image=Non
             use_tracking = not use_tracking
             person_detector.enable_tracking(use_tracking)
             print(f"Tracking {'enabled' if use_tracking else 'disabled'}")
+        elif key == ord('s'):
+            # Toggle data saving on/off
+            current_save_data = not current_save_data
+            print(f"Data saving {'enabled' if current_save_data else 'disabled'}")
         
         # Save snapshots at regular intervals
         if snapshots_dir and frame_count % snapshot_interval == 0:
@@ -595,5 +721,11 @@ def process_cctv_to_top_view(video_path, output_path=None, calibration_image=Non
         if colorized_density is not None:
             cv2.imwrite(f"{base_path}_density_final.jpg", colorized_density)
         print(f"Final frames saved as JPG images.")
+        
+    # Also print how many frames had data saved
+    if save_data:
+        object_count = len(os.listdir(os.path.join(area_manager.objects_dir)))
+        density_count = len(os.listdir(os.path.join(area_manager.density_dir)))
+        print(f"Data saved for {object_count} object detection frames and {density_count} density frames (every 20th frame).")
         
     return base_path + "_top_view.mp4" if output_path else None

@@ -255,20 +255,58 @@ import os
 import json
 import hashlib
 
+import cv2
+import numpy as np
+import os
+import json
+import hashlib
+from pathlib import Path
+
 class AreaManager:
     """
-    Class for managing and visualizing areas of interest
-    with functionality to save and load defined areas
+    Enhanced class for managing and visualizing areas of interest
+    with functionality to save and load defined areas, perspective points,
+    and tracking data for detected objects and density points.
     """
-    def __init__(self, save_dir="bounding_box_data"):
+    def __init__(self, video_path=None, save_dir="video_data"):
         self.walking_areas = []  # List of polygons defining walking areas
         self.roads = []          # List of polygons defining roads
-        self.save_dir = save_dir
+        self.perspective_points = []  # Four points used for perspective transformation
+        self.detected_objects = {}  # Dictionary to store detected objects by frame
+        self.density_points = {}  # Dictionary to store density points by frame
         
-        # Create the save directory if it doesn't exist
-        if not os.path.exists(self.save_dir):
-            os.makedirs(self.save_dir)
-            print(f"Created directory: {self.save_dir}")
+        # Save the video path for later reference
+        self.video_path = video_path
+        self.video_id = self._get_video_id(video_path) if video_path else None
+        
+        # Create the save directory structure if it doesn't exist
+        self.save_dir = save_dir
+        self.areas_dir = os.path.join(save_dir, "areas")
+        self.objects_dir = os.path.join(save_dir, "objects")
+        self.density_dir = os.path.join(save_dir, "density")
+        self.perspective_dir = os.path.join(save_dir, "perspective")
+        
+        for directory in [self.save_dir, self.areas_dir, self.objects_dir, self.density_dir, self.perspective_dir]:
+            if not os.path.exists(directory):
+                os.makedirs(directory)
+                print(f"Created directory: {directory}")
+    
+    def _get_video_id(self, video_path):
+        """Generate a unique identifier for a video based on its path and file stats"""
+        if not video_path:
+            return None
+            
+        # Get file stats (size, modification time)
+        try:
+            stats = os.stat(video_path)
+            # Create a unique identifier based on path, size and modification time
+            video_id = f"{os.path.basename(video_path)}_{stats.st_size}_{int(stats.st_mtime)}"
+            # Hash it to get a fixed-length string
+            return hashlib.md5(video_id.encode()).hexdigest()
+        except Exception as e:
+            print(f"Warning: Could not get video stats: {e}")
+            # Fallback to just the filename
+            return hashlib.md5(os.path.basename(video_path).encode()).hexdigest()
     
     def get_frame_hash(self, frame):
         """Generate a unique identifier for a frame based on its content"""
@@ -277,40 +315,66 @@ class AreaManager:
         # Calculate a hash of the frame
         return hashlib.md5(small_frame.tobytes()).hexdigest()
     
-    def get_file_path(self, frame_hash):
-        """Get the file path for saving/loading areas based on frame hash"""
-        return os.path.join(self.save_dir, f"areas_{frame_hash}.json")
+    def _get_areas_file_path(self):
+        """Get the file path for saving/loading areas based on video ID"""
+        if not self.video_id:
+            raise ValueError("Video ID not set. Initialize with a valid video path.")
+        return os.path.join(self.areas_dir, f"areas_{self.video_id}.json")
     
-    def save_areas(self, frame_hash=None, frame=None):
-        """Save defined areas to a JSON file"""
-        # If frame is provided but not hash, generate hash from frame
-        if frame_hash is None and frame is not None:
-            frame_hash = self.get_frame_hash(frame)
+    def _get_perspective_file_path(self):
+        """Get the file path for saving/loading perspective points based on video ID"""
+        if not self.video_id:
+            raise ValueError("Video ID not set. Initialize with a valid video path.")
+        return os.path.join(self.perspective_dir, f"perspective_{self.video_id}.json")
+    
+    def _get_objects_file_path(self, frame_number=None):
+        """Get the file path for saving/loading detected objects based on video ID and frame number"""
+        if not self.video_id:
+            raise ValueError("Video ID not set. Initialize with a valid video path.")
         
-        if frame_hash is None:
-            print("Error: Either frame_hash or frame must be provided to save areas")
+        # If frame number is provided, create a file for that specific frame
+        if frame_number is not None:
+            return os.path.join(self.objects_dir, f"objects_{self.video_id}_frame_{frame_number:06d}.json")
+        
+        # Otherwise return the base path for the video
+        return os.path.join(self.objects_dir, f"objects_{self.video_id}.json")
+    
+    def _get_density_file_path(self, frame_number=None):
+        """Get the file path for saving/loading density points based on video ID and frame number"""
+        if not self.video_id:
+            raise ValueError("Video ID not set. Initialize with a valid video path.")
+        
+        # If frame number is provided, create a file for that specific frame
+        if frame_number is not None:
+            return os.path.join(self.density_dir, f"density_{self.video_id}_frame_{frame_number:06d}.json")
+        
+        # Otherwise return the base path for the video
+        return os.path.join(self.density_dir, f"density_{self.video_id}.json")
+    
+    def save_areas(self):
+        """Save defined walking areas and roads to a JSON file"""
+        if not self.video_id:
+            print("Error: Video ID not set. Unable to save areas.")
             return False
         
         # Check if we have any areas to save
         if not self.walking_areas and not self.roads:
             print("Warning: No areas defined to save")
-            # Still create an empty file to indicate this frame was processed
+            # Still create an empty file to indicate this video was processed
         
         # Convert numpy arrays to lists for JSON serialization
         areas_data = {
             "walking_areas": [area.tolist() for area in self.walking_areas],
-            "roads": [road.tolist() for road in self.roads]
+            "roads": [road.tolist() for road in self.roads],
+            "video_path": self.video_path
         }
         
-        file_path = self.get_file_path(frame_hash)
-        print(f"Attempting to save areas to: {os.path.abspath(file_path)}")
+        file_path = self._get_areas_file_path()
+        print(f"Saving areas to: {os.path.abspath(file_path)}")
         
         try:
             # Make sure the directory exists
             os.makedirs(os.path.dirname(file_path), exist_ok=True)
-            
-            # Debug: print what we're about to save
-            print(f"Saving {len(self.walking_areas)} walking areas and {len(self.roads)} roads")
             
             with open(file_path, 'w') as f:
                 json.dump(areas_data, f)
@@ -329,19 +393,15 @@ class AreaManager:
             traceback.print_exc()
             return False
     
-    def load_areas(self, frame_hash=None, frame=None):
-        """Load defined areas from a JSON file"""
-        # If frame is provided but not hash, generate hash from frame
-        if frame_hash is None and frame is not None:
-            frame_hash = self.get_frame_hash(frame)
-        
-        if frame_hash is None:
-            print("Error: Either frame_hash or frame must be provided to load areas")
+    def load_areas(self):
+        """Load defined walking areas and roads from a JSON file"""
+        if not self.video_id:
+            print("Error: Video ID not set. Unable to load areas.")
             return False
         
-        file_path = self.get_file_path(frame_hash)
+        file_path = self._get_areas_file_path()
         if not os.path.exists(file_path):
-            print(f"No saved areas found for this frame")
+            print(f"No saved areas found for this video")
             return False
         
         try:
@@ -358,15 +418,262 @@ class AreaManager:
             print(f"Error loading areas: {e}")
             return False
     
+    def save_perspective_points(self, points):
+        """Save perspective transformation points to a JSON file"""
+        if not self.video_id:
+            print("Error: Video ID not set. Unable to save perspective points.")
+            return False
+        
+        self.perspective_points = points
+        
+        # Convert points to list for JSON serialization
+        points_data = {
+            "perspective_points": [point.tolist() for point in points] if isinstance(points[0], np.ndarray) else points,
+            "video_path": self.video_path
+        }
+        
+        file_path = self._get_perspective_file_path()
+        print(f"Saving perspective points to: {os.path.abspath(file_path)}")
+        
+        try:
+            # Make sure the directory exists
+            os.makedirs(os.path.dirname(file_path), exist_ok=True)
+            
+            with open(file_path, 'w') as f:
+                json.dump(points_data, f)
+            
+            # Verify the file was created
+            if os.path.exists(file_path):
+                file_size = os.path.getsize(file_path)
+                print(f"Perspective points saved successfully to {file_path} (size: {file_size} bytes)")
+                return True
+            else:
+                print(f"Error: File was not created at {file_path}")
+                return False
+        except Exception as e:
+            print(f"Error saving perspective points: {e}")
+            return False
+    
+    def load_perspective_points(self):
+        """Load perspective transformation points from a JSON file"""
+        if not self.video_id:
+            print("Error: Video ID not set. Unable to load perspective points.")
+            return False
+        
+        file_path = self._get_perspective_file_path()
+        if not os.path.exists(file_path):
+            print(f"No saved perspective points found for this video")
+            return False
+        
+        try:
+            with open(file_path, 'r') as f:
+                points_data = json.load(f)
+            
+            # Convert lists back to numpy arrays
+            self.perspective_points = [np.array(point) for point in points_data.get("perspective_points", [])]
+            
+            print(f"Loaded perspective points from {file_path}")
+            return True
+        except Exception as e:
+            print(f"Error loading perspective points: {e}")
+            return False
+    
+    def save_detected_objects(self, frame_number, object_data):
+        """Save detected objects for a specific frame to a JSON file
+        
+        Args:
+            frame_number: The frame number
+            object_data: List of detected objects with their top view coordinates
+                         Format: [{"id": id, "orig_bbox": [x1,y1,x2,y2], "top_view": [x,y], "confidence": conf}, ...]
+        """
+        if not self.video_id:
+            print("Error: Video ID not set. Unable to save detected objects.")
+            return False
+        
+        # Store the data internally
+        self.detected_objects[frame_number] = object_data
+        
+        file_path = self._get_objects_file_path(frame_number)
+        print(f"Saving detected objects for frame {frame_number} to: {os.path.abspath(file_path)}")
+        
+        try:
+            # Make sure the directory exists
+            os.makedirs(os.path.dirname(file_path), exist_ok=True)
+            
+            # Prepare data for JSON serialization
+            json_data = {
+                "frame_number": frame_number,
+                "video_id": self.video_id,
+                "video_path": self.video_path,
+                "objects": object_data
+            }
+            
+            with open(file_path, 'w') as f:
+                json.dump(json_data, f)
+            
+            return True
+        except Exception as e:
+            print(f"Error saving detected objects: {e}")
+            return False
+    
+    def load_detected_objects(self, frame_number=None):
+        """Load detected objects from a JSON file for a specific frame or all frames
+        
+        Args:
+            frame_number: The specific frame number to load, or None to load all available frames
+            
+        Returns:
+            Dictionary of detected objects by frame number, or list of objects for specific frame
+        """
+        if not self.video_id:
+            print("Error: Video ID not set. Unable to load detected objects.")
+            return None
+        
+        if frame_number is not None:
+            # Load a specific frame
+            file_path = self._get_objects_file_path(frame_number)
+            if not os.path.exists(file_path):
+                #print(f"No saved objects found for frame {frame_number}")
+                return []
+            
+            try:
+                with open(file_path, 'r') as f:
+                    data = json.load(f)
+                self.detected_objects[frame_number] = data.get("objects", [])
+                return data.get("objects", [])
+            except Exception as e:
+                print(f"Error loading detected objects for frame {frame_number}: {e}")
+                return []
+        else:
+            # Load all available frames
+            objects_dir = os.path.dirname(self._get_objects_file_path())
+            prefix = f"objects_{self.video_id}_frame_"
+            all_objects = {}
+            
+            try:
+                # Find all files matching the pattern
+                for file_name in os.listdir(objects_dir):
+                    if file_name.startswith(prefix) and file_name.endswith(".json"):
+                        # Extract frame number from filename
+                        frame_str = file_name[len(prefix):-5]  # Remove prefix and .json
+                        try:
+                            frame_num = int(frame_str)
+                            file_path = os.path.join(objects_dir, file_name)
+                            with open(file_path, 'r') as f:
+                                data = json.load(f)
+                            all_objects[frame_num] = data.get("objects", [])
+                        except ValueError:
+                            continue
+                
+                self.detected_objects = all_objects
+                print(f"Loaded detected objects for {len(all_objects)} frames")
+                return all_objects
+            except Exception as e:
+                print(f"Error loading all detected objects: {e}")
+                return {}
+    
+    def save_density_points(self, frame_number, density_data):
+        """Save density points for a specific frame to a JSON file
+        
+        Args:
+            frame_number: The frame number
+            density_data: List of density points with their top view coordinates
+                          Format: [{"top_view": [x,y], "density_value": value}, ...]
+        """
+        if not self.video_id:
+            print("Error: Video ID not set. Unable to save density points.")
+            return False
+        
+        # Store the data internally
+        self.density_points[frame_number] = density_data
+        
+        file_path = self._get_density_file_path(frame_number)
+        #print(f"Saving density points for frame {frame_number} to: {os.path.abspath(file_path)}")
+        
+        try:
+            # Make sure the directory exists
+            os.makedirs(os.path.dirname(file_path), exist_ok=True)
+            
+            # Prepare data for JSON serialization
+            json_data = {
+                "frame_number": frame_number,
+                "video_id": self.video_id,
+                "video_path": self.video_path,
+                "density_points": density_data
+            }
+            
+            with open(file_path, 'w') as f:
+                json.dump(json_data, f)
+            
+            return True
+        except Exception as e:
+            print(f"Error saving density points: {e}")
+            return False
+    
+    def load_density_points(self, frame_number=None):
+        """Load density points from a JSON file for a specific frame or all frames
+        
+        Args:
+            frame_number: The specific frame number to load, or None to load all available frames
+            
+        Returns:
+            Dictionary of density points by frame number, or list of points for specific frame
+        """
+        if not self.video_id:
+            print("Error: Video ID not set. Unable to load density points.")
+            return None
+        
+        if frame_number is not None:
+            # Load a specific frame
+            file_path = self._get_density_file_path(frame_number)
+            if not os.path.exists(file_path):
+                #print(f"No saved density points found for frame {frame_number}")
+                return []
+            
+            try:
+                with open(file_path, 'r') as f:
+                    data = json.load(f)
+                self.density_points[frame_number] = data.get("density_points", [])
+                return data.get("density_points", [])
+            except Exception as e:
+                print(f"Error loading density points for frame {frame_number}: {e}")
+                return []
+        else:
+            # Load all available frames
+            density_dir = os.path.dirname(self._get_density_file_path())
+            prefix = f"density_{self.video_id}_frame_"
+            all_points = {}
+            
+            try:
+                # Find all files matching the pattern
+                for file_name in os.listdir(density_dir):
+                    if file_name.startswith(prefix) and file_name.endswith(".json"):
+                        # Extract frame number from filename
+                        frame_str = file_name[len(prefix):-5]  # Remove prefix and .json
+                        try:
+                            frame_num = int(frame_str)
+                            file_path = os.path.join(density_dir, file_name)
+                            with open(file_path, 'r') as f:
+                                data = json.load(f)
+                            all_points[frame_num] = data.get("density_points", [])
+                        except ValueError:
+                            continue
+                
+                self.density_points = all_points
+                print(f"Loaded density points for {len(all_points)} frames")
+                return all_points
+            except Exception as e:
+                print(f"Error loading all density points: {e}")
+                return {}
+    
     def define_areas(self, frame):
-        """Check if areas exist for this frame, if not define them"""
-        frame_hash = self.get_frame_hash(frame)
-        print(f"Frame hash: {frame_hash}")
+        """Check if areas exist for this video, if not define them"""
+        print(f"Checking for existing areas for video ID: {self.video_id}")
         
         # Try to load existing areas
-        if self.load_areas(frame_hash=frame_hash):
+        if self.load_areas():
             print("Using previously defined areas")
-            return
+            return True
         
         # If no areas exist, define them
         print("No previously defined areas found. Let's define them now.")
@@ -375,11 +682,13 @@ class AreaManager:
         
         # Save the newly defined areas
         print("Now saving the newly defined areas...")
-        success = self.save_areas(frame_hash=frame_hash)
+        success = self.save_areas()
         if success:
             print("Areas successfully saved!")
+            return True
         else:
             print("WARNING: Failed to save areas. They will need to be defined again next time.")
+            return False
     
     def define_walking_area(self, frame):
         """Let user define walking area boundaries on the original frame"""

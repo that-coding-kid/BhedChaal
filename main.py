@@ -6,6 +6,8 @@ density points and detection heat map
 
 import os
 import argparse
+import subprocess
+import sys
 from visualization import process_cctv_to_top_view
 from simulation_enhancement import enhanced_process_cctv_to_top_view
 
@@ -41,6 +43,12 @@ def main():
                         help='Threshold for stampede warning when anomalies exceed this value (default: 35)')
     parser.add_argument('--max-bottlenecks', type=int, default=3,
                         help='Maximum number of bottlenecks to identify (default: 3)')
+    parser.add_argument('--run-panic-sim', action='store_true',
+                        help='Launch panic/stampede simulation after video processing')
+    parser.add_argument('--auto-record', action='store_true',
+                        help='Automatically start recording animation when panic simulation begins')
+    parser.add_argument('--record-duration', type=int, default=60,
+                        help='Duration of auto-recording in seconds (default: 60)')
     
     args = parser.parse_args()
     
@@ -80,6 +88,9 @@ def main():
         print(f"Stampede threshold: {args.stampede_threshold}")
         print(f"Max bottlenecks: {args.max_bottlenecks}")
     
+    if args.run_panic_sim and args.auto_record:
+        print(f"Auto-recording: Enabled ({args.record_duration} seconds)")
+    
     try:
         # Run the processing with appropriate function
         if args.enhanced:
@@ -115,6 +126,54 @@ def main():
         
         if result:
             print(f"Processing completed successfully. Output: {result}")
+            
+            # Launch panic simulation if requested
+            if args.run_panic_sim:
+                print("Launching panic/stampede simulation...")
+                
+                # Check if panic_simulation.py exists
+                if not os.path.exists("panic_simulation.py"):
+                    print("Error: panic_simulation.py not found.")
+                    return 1
+                
+                try:
+                    # Try to import the panic simulation directly for better control
+                    try:
+                        sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+                        from panic_simulation import PanicSimulation
+                        
+                        # Create simulation instance
+                        simulation = PanicSimulation()
+                        
+                        # Load data
+                        if simulation.load_data_from_video(args.video_path):
+                            # Auto-start recording if requested
+                            if args.auto_record:
+                                print(f"Auto-recording enabled for {args.record_duration} seconds")
+                                simulation.start_recording(duration=args.record_duration)
+                            
+                            # Run simulation
+                            simulation.run_simulation()
+                            print("Panic simulation completed.")
+                        else:
+                            print(f"Failed to load data from {args.video_path}")
+                            return 1
+                            
+                    except ImportError:
+                        # Fall back to subprocess call
+                        print("Using subprocess to launch panic simulation...")
+                        # Cannot pass auto-record flag when using subprocess
+                        if args.auto_record:
+                            print("Warning: Auto-record flag will be ignored in subprocess mode")
+                        
+                        subprocess.run([sys.executable, "panic_simulation.py", args.video_path], 
+                                    check=True)
+                        print("Panic simulation completed.")
+                        
+                except Exception as e:
+                    print(f"Error running panic simulation: {e}")
+                    return 1
+            
             return 0
         else:
             print("Processing completed but no output was produced.")

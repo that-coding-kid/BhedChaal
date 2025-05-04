@@ -683,7 +683,7 @@ def create_enhanced_top_view(frame, density_map, previous_density_map, person_de
                 # Use matching text color for the major flow label
                 cv2.putText(top_view, "Major Flow", (flow_center[0] - 60, flow_center[1] - 10),
                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-        
+                
         # NEW: Draw bottleneck box if identified (when anomaly count exceeds threshold)
         if anomaly_detector.bottlenecks:
             anomaly_detector.draw_bottleneck(top_view, is_original_view=False)
@@ -1494,7 +1494,7 @@ def enhanced_process_cctv_to_top_view(video_path, output_path=None, calibration_
                 # Draw bottlenecks on original frame
                 anomaly_detector.draw_bottleneck(frame_with_visualization, is_original_view=True, 
                                                 original_bottlenecks=original_bottlenecks)
-                
+        
         # Add data saving indicator
         save_text = "Data Saving: ON" if current_save_data else "Data Saving: OFF"
         cv2.putText(frame_with_visualization, save_text, (width - 200, height - 50), 

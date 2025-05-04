@@ -42,7 +42,8 @@ The BhedChaal system follows a sophisticated workflow:
    - Feeds into Panic Simulation module that uses social force models in pygame
    - Simulates crowd behavior under normal and panic conditions
 
-![Workflow Diagram](assets/workflow_diagram.png)
+![WhatsApp Image 2025-05-04 at 13 27 11_89fe56ed](https://github.com/user-attachments/assets/df3e8e40-fbb6-4af6-a923-acb5dae3853e)
+
 
 # Key Features
 

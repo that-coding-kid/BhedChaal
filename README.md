@@ -56,13 +56,14 @@ The BhedChaal system follows a sophisticated workflow:
 ## Spatial Transformation
 - CCTV to top-view conversion with interactive calibration
 - Save and reuse perspective points across sessions
-  ![image](https://github.com/user-attachments/assets/89687114-9eaa-4c6e-8122-ec184f5e3b8c)
+
 
 
 ## Detection and Tracking
 - Person detection with YOLOv11 Fcae detection finetuned specifically for face detection
 - Multi-object tracking with persistent IDs
 - Movement vector analysis
+  
   ![image](https://github.com/user-attachments/assets/d15f6cff-1bc8-4979-a902-e52cd3bf6ef4)
 
 ## Density Analysis
@@ -75,7 +76,9 @@ The BhedChaal system follows a sophisticated workflow:
 - Automatic bottleneck identification
 - Stampede early warning system
 - Anomaly persistence tracking
-  ![image](https://github.com/user-attachments/assets/9804382a-041f-449d-91b2-7a070d542f07)
+  
+  
+![image](https://github.com/user-attachments/assets/9804382a-041f-449d-91b2-7a070d542f07)
 
 ![image](https://github.com/user-attachments/assets/860f0d45-2a9e-4dfc-a2f9-847089ddc61f)
 

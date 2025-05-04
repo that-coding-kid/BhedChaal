@@ -1,0 +1,1 @@
+digraph G { rankdir=LR; subgraph cluster_0 { label="BhedChaal System"; color=blue; Input [shape=oval]; Process [shape=box]; Output [shape=oval]; Input -> Process -> Output; } }

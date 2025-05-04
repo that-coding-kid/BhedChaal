@@ -44,16 +44,56 @@ The BhedChaal system follows a sophisticated workflow:
 
 ![Workflow Diagram](assets/workflow_diagram.png)
 
-## Features
+# Key Features
 
-- **CCTV to Top-View Conversion**: Transform perspective view from surveillance cameras to top-down view
-- **Person Detection and Tracking**: Identify and track individuals in crowded scenes using YOLOv8
-- **Crowd Density Estimation**: Estimate crowd density using CSRNet deep learning model
-- **Anomaly Detection**: Identify unusual movements, bottlenecks, and potential stampede conditions
-- **Crowd Simulation**: Simulate panic and stampede scenarios using social force model
-- **Visualization Tools**: Multiple visualization modes (top view, density map, heat map)
+## Enhanced Video Processing
+- SRGAN Frame Enhancement for improved detail in low-resolution footage
+- Video standardization for consistent analysis
+  ![image](https://github.com/user-attachments/assets/49c3dbe6-0aa8-4da7-bf55-81cc4101c1d6)
 
-## Screenshots and Visualizations
+
+## Spatial Transformation
+- CCTV to top-view conversion with interactive calibration
+- Save and reuse perspective points across sessions
+  ![image](https://github.com/user-attachments/assets/89687114-9eaa-4c6e-8122-ec184f5e3b8c)
+
+
+## Detection and Tracking
+- Person detection with YOLOv11 Fcae detection finetuned specifically for face detection
+- Multi-object tracking with persistent IDs
+- Movement vector analysis
+  ![image](https://github.com/user-attachments/assets/d15f6cff-1bc8-4979-a902-e52cd3bf6ef4)
+
+## Density Analysis
+- Crowd density estimation using CSRNet
+- Hybrid detection for accurate crowd measurement
+- Heat map visualization of crowd density
+
+## Anomaly Detection
+- Counter-flow detection for identifying unusual movements
+- Automatic bottleneck identification
+- Stampede early warning system
+- Anomaly persistence tracking
+  ![image](https://github.com/user-attachments/assets/9804382a-041f-449d-91b2-7a070d542f07)
+
+![image](https://github.com/user-attachments/assets/860f0d45-2a9e-4dfc-a2f9-847089ddc61f)
+
+## Physics-Based Crowd Simulation
+- Social force model for realistic crowd dynamics
+- Panic propagation modeling
+- Agent-based individual simulation
+- Fluid-like crowd approximation for emergency scenarios
+  
+![image](https://github.com/user-attachments/assets/af61354f-e5d8-4c84-841d-3a2761504251)
+![image](https://github.com/user-attachments/assets/d56ac310-73c4-4118-925f-812e0c38278c)
+
+## Interactive Controls
+- Multi-view display (original, top-view, density)
+- Dynamic panic triggering through interactive interface
+- Customizable simulation parameters
+- Real-time analytics dashboard
+
+## Some more Screenshots and Visualizations
 
 Here are some examples of BhedChaal's output:
 

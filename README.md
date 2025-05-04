@@ -7,8 +7,6 @@ A crowd analysis and simulation system for safety monitoring and stampede preven
 
 BhedChaal is a comprehensive crowd analysis toolkit that combines computer vision, density estimation, anomaly detection, and crowd simulation to help understand, monitor, and predict crowd behavior in various settings. The system is designed to assist in safety planning and real-time monitoring of crowded environments to prevent incidents such as stampedes and bottlenecks.
 
-![System Overview](assets/system_overview.png)
-
 ## System Workflow
 
 The BhedChaal system follows a sophisticated workflow:

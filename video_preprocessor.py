@@ -123,4 +123,25 @@ class VideoPreprocessor:
             os.makedirs(self.temp_dir, exist_ok=True)
             self.logger.info("Cleanup complete")
         except Exception as e:
-            self.logger.error(f"Error during cleanup: {str(e)}") 
+            self.logger.error(f"Error during cleanup: {str(e)}")
+
+# Add this function to wrap the VideoPreprocessor class
+def preprocess_video(input_path, target_resolution=(1280, 720), output_format='mp4', temp_dir=None):
+    """
+    Preprocess a video to standardize its resolution.
+    
+    Parameters:
+    - input_path: Path to the input video file
+    - target_resolution: Tuple of (width, height) for the standardized resolution
+    - output_format: Output video format (mp4, avi, etc.)
+    - temp_dir: Directory to store temporary processed videos (None for system default)
+    
+    Returns:
+    - Path to the processed video file
+    """
+    preprocessor = VideoPreprocessor(
+        target_resolution=target_resolution,
+        output_format=output_format,
+        temp_dir=temp_dir
+    )
+    return preprocessor.process_video(input_path) 

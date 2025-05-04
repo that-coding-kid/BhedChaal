@@ -87,7 +87,8 @@ The BhedChaal system follows a sophisticated workflow:
 - Fluid-like crowd approximation for emergency scenarios
   
 ![image](https://github.com/user-attachments/assets/af61354f-e5d8-4c84-841d-3a2761504251)
-![image](https://github.com/user-attachments/assets/d56ac310-73c4-4118-925f-812e0c38278c)
+![image](https://github.com/user-attachments/assets/8a8e6e72-36dc-4eaf-833c-eae42ebbd61e)
+
 
 ## Interactive Controls
 - Multi-view display (original, top-view, density)

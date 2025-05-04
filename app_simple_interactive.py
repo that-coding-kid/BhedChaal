@@ -8,6 +8,8 @@ import time
 import subprocess
 import sys
 from pathlib import Path
+import json
+import hashlib
 
 # Import from existing codebase
 from visualization import process_cctv_to_top_view, get_perspective_transform
@@ -27,6 +29,7 @@ st.set_page_config(
 
 # Define global variables
 TEMP_DIR = "temp"
+BBOX_DATA_DIR = "bounding_box_data"
 if not os.path.exists(TEMP_DIR):
     os.makedirs(TEMP_DIR)
 
@@ -60,6 +63,25 @@ if 'current_area_points' not in st.session_state:
     st.session_state.current_area_points = []
 if 'area_type' not in st.session_state:
     st.session_state.area_type = 'walking'
+if 'coordinates_saved' not in st.session_state:
+    st.session_state.coordinates_saved = False
+
+def get_video_id(video_path):
+    """Generate a unique identifier for a video based on its path and file stats"""
+    if not video_path:
+        return None
+        
+    # Get file stats (size, modification time)
+    try:
+        stats = os.stat(video_path)
+        # Create a unique identifier based on path, size and modification time
+        video_id = f"{os.path.basename(video_path)}_{stats.st_size}_{int(stats.st_mtime)}"
+        # Hash it to get a fixed-length string
+        return hashlib.md5(video_id.encode()).hexdigest()
+    except Exception as e:
+        print(f"Warning: Could not get video stats: {e}")
+        # Fallback to just the filename
+        return hashlib.md5(os.path.basename(video_path).encode()).hexdigest()
 
 def save_uploaded_file(uploaded_file):
     """Save uploaded file to temporary directory and return the file path"""
@@ -67,6 +89,85 @@ def save_uploaded_file(uploaded_file):
     with open(file_path, "wb") as f:
         f.write(uploaded_file.getbuffer())
     return file_path
+
+def check_saved_coordinates(video_path):
+    """Check if coordinates are already saved for this video in bounding_box_data directory"""
+    video_id = get_video_id(video_path)
+    areas_file = os.path.join(BBOX_DATA_DIR, f"areas_{video_id}.json")
+    
+    # First check in bounding_box_data directory
+    if os.path.exists(areas_file):
+        try:
+            with open(areas_file, 'r') as f:
+                areas_data = json.load(f)
+            
+            # Load walking areas and roads
+            st.session_state.walking_areas = areas_data.get("walking_areas", [])
+            st.session_state.roads = areas_data.get("roads", [])
+            
+            # Check if walking areas exist and perspective points exist in areas_data
+            if st.session_state.walking_areas:
+                # Check if perspective_points are saved in the JSON
+                if "perspective_points" in areas_data and len(areas_data["perspective_points"]) == 4:
+                    st.session_state.perspective_points = areas_data["perspective_points"]
+                # Else use the first 4 points of the first walking area as perspective points if needed
+                elif len(st.session_state.walking_areas[0]) >= 4:
+                    st.session_state.perspective_points = st.session_state.walking_areas[0][:4]
+                
+                # Always set the points to the perspective points for display
+                if st.session_state.perspective_points:
+                    st.session_state.points = st.session_state.perspective_points.copy()
+                    print(f"Loaded coordinates from {areas_file}")
+                    st.session_state.coordinates_saved = True
+                    return True
+                    
+        except Exception as e:
+            print(f"Error loading saved coordinates: {e}")
+    
+    # If not found in bounding_box_data, check in video_data
+    area_manager = AreaManager(video_path=video_path)
+    if area_manager.load_areas() and area_manager.load_perspective_points():
+        st.session_state.walking_areas = [area.tolist() for area in area_manager.walking_areas]
+        st.session_state.roads = [road.tolist() for road in area_manager.roads]
+        st.session_state.perspective_points = [point.tolist() for point in area_manager.perspective_points]
+        st.session_state.points = st.session_state.perspective_points.copy()
+        
+        # Also save to bounding_box_data to ensure it's available there
+        save_coordinates_to_bounding_box_data(video_path)
+        
+        st.session_state.coordinates_saved = True
+        return True
+    
+    return False
+
+def save_coordinates_to_bounding_box_data(video_path):
+    """Save current coordinates to bounding_box_data directory"""
+    video_id = get_video_id(video_path)
+    
+    # Ensure the directory exists
+    os.makedirs(BBOX_DATA_DIR, exist_ok=True)
+    
+    # Save to bounding_box_data directory
+    areas_file = os.path.join(BBOX_DATA_DIR, f"areas_{video_id}.json")
+    
+    # Create data structure
+    areas_data = {
+        "walking_areas": st.session_state.walking_areas,
+        "roads": st.session_state.roads,
+        "perspective_points": st.session_state.perspective_points
+    }
+    
+    # Save to file
+    try:
+        with open(areas_file, 'w') as f:
+            json.dump(areas_data, f)
+        
+        print(f"Saved coordinates to {areas_file}")
+        st.session_state.coordinates_saved = True
+        return True
+    except Exception as e:
+        print(f"Error saving coordinates: {e}")
+        return False
 
 def display_visual_point_selection(frame):
     """
@@ -151,6 +252,8 @@ def display_visual_point_selection(frame):
         # Button to confirm points
         if st.button("Confirm Points") and len(st.session_state.points) == 4:
             st.session_state.perspective_points = st.session_state.points.copy()
+            # Save coordinates after confirmation
+            save_coordinates_to_bounding_box_data(st.session_state.video_path)
             st.session_state.step = "areas"
             st.rerun()
     
@@ -230,6 +333,8 @@ def display_area_selection(frame):
                 st.session_state.roads.append(st.session_state.current_area_points.copy())
             
             st.session_state.current_area_points = []
+            # Save coordinates whenever an area is completed
+            save_coordinates_to_bounding_box_data(st.session_state.video_path)
             st.rerun()
         
         # Button to clear current area points
@@ -251,6 +356,8 @@ def display_area_selection(frame):
         
         # Button to continue to options
         if st.button("Continue to Options"):
+            # Final save before moving to options
+            save_coordinates_to_bounding_box_data(st.session_state.video_path)
             st.session_state.step = "options"
             st.rerun()
     
@@ -272,9 +379,27 @@ def run_video_analysis(video_path, src_points, options, walking_areas, roads):
     output_density = os.path.join(output_dir, f"{video_name}_enhanced_density.mp4")
     
     # Create area manager and set areas
-    area_manager = AreaManager()
-    area_manager.walking_areas = [np.array(area, np.int32) for area in walking_areas]
-    area_manager.roads = [np.array(road, np.int32) for road in roads]
+    area_manager = AreaManager(video_path=video_path)
+    
+    # Set walking areas and roads directly if provided (from saved coordinates)
+    # This will prevent CLI windows from opening
+    if walking_areas and roads:
+        area_manager.walking_areas = [np.array(area, np.int32) for area in walking_areas]
+        area_manager.roads = [np.array(road, np.int32) for road in roads]
+        # Save perspective points as well to prevent CLI windows
+        if src_points:
+            area_manager.perspective_points = [np.array(point, np.int32) for point in src_points]
+            area_manager.save_perspective_points(area_manager.perspective_points)
+        area_manager.save_areas()  # Save them to ensure they're available
+        # Set the flags to skip CLI area selection windows
+        save_data = False  # We already saved the data
+        load_saved_data = True  # Load saved data instead of prompting
+    else:
+        # Try to load from saved data
+        area_manager.load_areas()
+        # Default flags if we don't have saved coordinates
+        save_data = True
+        load_saved_data = True
     
     # Process the video
     if options["enhanced"]:
@@ -291,7 +416,9 @@ def run_video_analysis(video_path, src_points, options, walking_areas, roads):
             preprocess_video=options["preprocess"],
             anomaly_threshold=options["anomaly_threshold"],
             stampede_threshold=options["stampede_threshold"],
-            max_bottlenecks=options["max_bottlenecks"]
+            max_bottlenecks=options["max_bottlenecks"],
+            save_data=save_data,
+            load_saved_data=load_saved_data
         )
     else:
         result = process_cctv_to_top_view(
@@ -305,7 +432,9 @@ def run_video_analysis(video_path, src_points, options, walking_areas, roads):
             preprocess_video=options["preprocess"],
             anomaly_threshold=options["anomaly_threshold"],
             stampede_threshold=options["stampede_threshold"],
-            max_bottlenecks=options["max_bottlenecks"]
+            max_bottlenecks=options["max_bottlenecks"],
+            save_data=save_data,
+            load_saved_data=load_saved_data
         )
     
     return {
@@ -377,6 +506,9 @@ def main():
             st.session_state.video_path = video_path
             st.write(f"Video uploaded successfully: {uploaded_file.name}")
             
+            # Check if we already have saved coordinates
+            has_saved_coords = check_saved_coordinates(video_path)
+            
             # Get the first frame for perspective selection
             cap = cv2.VideoCapture(video_path)
             ret, frame = cap.read()
@@ -384,7 +516,12 @@ def main():
             
             if ret:
                 st.session_state.frame = frame
-                st.session_state.step = "perspective"
+                # Skip directly to options if coordinates are already set
+                if has_saved_coords:
+                    st.write("Found previously saved coordinates. Skipping to processing options.")
+                    st.session_state.step = "options"
+                else:
+                    st.session_state.step = "perspective"
                 st.rerun()
             else:
                 st.error("Failed to read the uploaded video. Please try a different file.")

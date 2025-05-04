@@ -16,6 +16,7 @@ from person_detection import AreaManager, PersonDetector
 from density_estimation import CrowdDensityEstimator
 from anomaly_detection import AnomalyDetector
 from video_preprocessor import preprocess_video
+from panic_simulation import PanicSimulation
 
 # Set page config
 st.set_page_config(
@@ -144,7 +145,47 @@ def run_video_analysis(video_path, src_points, options):
         "result": result
     }
 
-def show_results(results):
+def run_panic_simulation(video_path, auto_record=False, record_duration=60):
+    """Run panic simulation using the video data"""
+    try:
+        st.write("### Launching Panic Simulation")
+        status_placeholder = st.empty()
+        status_placeholder.info("Initializing panic simulation...")
+        
+        # Create simulation instance
+        simulation = PanicSimulation()
+        
+        # Load data
+        status_placeholder.info("Loading data from video...")
+        if simulation.load_data_from_video(video_path):
+            # Auto-start recording if requested
+            if auto_record:
+                status_placeholder.info(f"Auto-recording enabled for {record_duration} seconds")
+                simulation.start_recording(duration=record_duration)
+            
+            # Run simulation
+            status_placeholder.info("Running panic simulation... (check for a new Pygame window)")
+            simulation.run_simulation()
+            status_placeholder.success("Panic simulation completed.")
+            
+            # If there are recorded results, show them
+            results_dir = "panic_sim_results"
+            if os.path.exists(results_dir):
+                result_files = [f for f in os.listdir(results_dir) if f.endswith('.mp4')]
+                if result_files:
+                    st.write("### Panic Simulation Results")
+                    for file in result_files:
+                        st.video(os.path.join(results_dir, file))
+            
+            return True
+        else:
+            status_placeholder.error(f"Failed to load data from {video_path}")
+            return False
+    except Exception as e:
+        st.error(f"Error running panic simulation: {e}")
+        return False
+
+def show_results(results, video_path):
     """Display the results of the video analysis"""
     
     st.write("## Analysis Results")
@@ -176,6 +217,22 @@ def show_results(results):
     # Show additional outputs
     st.write("### Processing Results")
     st.json(results["result"])
+    
+    # Panic simulation section
+    st.write("## Panic Simulation")
+    st.write("Simulate potential stampede scenarios based on the crowd analysis.")
+    
+    # Panic simulation options
+    panic_col1, panic_col2 = st.columns(2)
+    
+    with panic_col1:
+        auto_record = st.checkbox("Auto-record simulation", value=True)
+    
+    with panic_col2:
+        record_duration = st.slider("Recording duration (seconds)", 10, 120, 60)
+    
+    if st.button("Launch Panic Simulation"):
+        run_panic_simulation(video_path, auto_record, record_duration)
 
 def main():
     st.title("BhedChaal - CCTV Crowd Analysis")
@@ -198,6 +255,9 @@ def main():
         ["n", "s", "m", "l", "x"],
         index=4  # Default to 'x'
     )
+    
+    # CSRNet weights selection
+    weights_path = st.sidebar.text_input("CSRNet Weights Path", "weights.pth")
     
     # Enhanced options
     density_threshold = 0.2
@@ -248,6 +308,18 @@ def main():
             step=1
         )
     
+    # Panic Simulation Options
+    st.sidebar.header("Panic Simulation Options")
+    run_panic_sim = st.sidebar.checkbox("Launch Panic Simulation After Processing", value=False)
+    panic_auto_record = st.sidebar.checkbox("Auto-record Panic Simulation", value=True)
+    panic_record_duration = st.sidebar.slider(
+        "Recording Duration (seconds)",
+        min_value=10,
+        max_value=120,
+        value=60,
+        step=10
+    )
+    
     # Main area
     if uploaded_file is not None:
         # Save uploaded file
@@ -276,14 +348,19 @@ def main():
                         "max_points": max_points,
                         "anomaly_threshold": anomaly_threshold,
                         "stampede_threshold": stampede_threshold,
-                        "max_bottlenecks": max_bottlenecks
+                        "max_bottlenecks": max_bottlenecks,
+                        "csrnet_weights": weights_path
                     }
                     
                     # Run analysis
                     results = run_video_analysis(video_path, src_points, options)
                     
                     # Show results
-                    show_results(results)
+                    show_results(results, video_path)
+                    
+                    # Automatically launch panic simulation if option is selected
+                    if run_panic_sim:
+                        run_panic_simulation(video_path, panic_auto_record, panic_record_duration)
         else:
             st.error("Failed to read the uploaded video. Please try a different file.")
     else:

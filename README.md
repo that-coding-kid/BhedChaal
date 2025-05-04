@@ -275,10 +275,13 @@ main.main()
 # Run with panic simulation
 sys.argv = [
     "main.py",
-    "--video-path", "your_video.mp4",
-    "--output", "output_video.mp4",
-    "--run-panic-sim",
-    "--auto-record"
+    "-w", "weights.pth",
+    "-o", "output_videos",
+    "-v", "14.mp4",
+    "-e",
+    "--anomaly-threshold", "15",
+    "--stampede-threshold", "20",
+    "--run-panic-sim"
 ]
 main.main()
 ```
@@ -324,8 +327,17 @@ python main.py --video-path your_video.mp4 --output output_video.mp4 --enhanced
 ### Run with Panic Simulation
 
 ```bash
-python main.py --video-path your_video.mp4 --output output_video.mp4 --run-panic-sim
+python main.py -w weights.pth -o output_videos -v 14.mp4 -e --anomaly-threshold 15 --stampede-threshold 20 --run-panic-sim
 ```
+
+This command:
+- Specifies `weights.pth` as the CSRNet model weights
+- Sets `output_videos` as the output directory
+- Uses `14.mp4` as the input video
+- Enables enhanced visualization with `-e`
+- Lowers the anomaly threshold to 15 (default: 30)
+- Lowers the stampede threshold to 20 (default: 35)
+- Runs the panic simulation after processing
 
 ### Command Line Options
 

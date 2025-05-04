@@ -105,7 +105,7 @@ Here are some examples of BhedChaal's output:
 | Original CCTV View with Detection | ![Original View](assets/original_view.png) |
 | Top-Down Transformed View | ![Top View](assets/top_view.png) |
 | Density Heatmap | ![Density Map](assets/density_map.png) |
-| Panic Simulation | ![Simulation](assets/simulation.png) |
+
 
 ## Requirements
 

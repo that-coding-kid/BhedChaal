@@ -15,6 +15,8 @@ import numpy as np
 import random
 from collections import defaultdict
 import colorsys
+import argparse
+import sys
 
 def create_enhanced_top_view(frame, density_map, previous_density_map, person_detector, homography, area_manager, 
                             estimated_count, size=(800, 600), 
@@ -71,6 +73,7 @@ def create_enhanced_top_view(frame, density_map, previous_density_map, person_de
     # New enhanced visualization: Transform density map to top view and generate points
     density_points = []
     density_points_data = []  # For saving to JSON
+    warped_density = None  # Store warped density for anomaly detection
     
     if density_map is not None:
         # Create a colorized version of the density map for visualization background
@@ -112,6 +115,9 @@ def create_enhanced_top_view(frame, density_map, previous_density_map, person_de
         
         # Generate points based on density map
         warped_norm_density = cv2.warpPerspective(norm_density, homography, size)
+        
+        # Save warped density for anomaly detection
+        warped_density_grayscale = warped_norm_density
         
         # Only consider points above the threshold
         high_density_areas = warped_norm_density > density_threshold
@@ -628,6 +634,14 @@ def create_enhanced_top_view(frame, density_map, previous_density_map, person_de
         # Prepare movement vectors for anomaly detection
         # Format: (position, vector, color, track_id)
         if len(movement_vectors) > 1:
+            # Update population density heatmap in the anomaly detector using both 
+            # the density map and tracked person positions
+            anomaly_detector.update_population_heatmap(
+                density_map=warped_density_grayscale if 'warped_density_grayscale' in locals() else None,
+                person_positions=person_positions if person_positions else None
+            )
+            
+            # Run anomaly detection
             anomaly_ids, major_flow_vector = anomaly_detector.detect_counter_flow(
                 movement_vectors, 
                 include_track_ids=True,
@@ -669,6 +683,10 @@ def create_enhanced_top_view(frame, density_map, previous_density_map, person_de
                 # Use matching text color for the major flow label
                 cv2.putText(top_view, "Major Flow", (flow_center[0] - 60, flow_center[1] - 10),
                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+        
+        # NEW: Draw bottleneck box if identified (when anomaly count exceeds threshold)
+        if anomaly_detector.bottlenecks:
+            anomaly_detector.draw_bottleneck(top_view, is_original_view=False)
     
     # Add anomaly to legend
     if anomaly_detector is not None:
@@ -1122,7 +1140,8 @@ def create_flow_visualization(frame, density_map_current, density_map_previous, 
 def enhanced_process_cctv_to_top_view(video_path, output_path=None, calibration_image=None, 
                                       src_points=None, use_tracking=True, yolo_model_size='x', 
                                       csrnet_model_path=None, density_threshold=0.2, max_points=200,
-                                      save_data=True, load_saved_data=True, preprocess_video=True):
+                                      save_data=True, load_saved_data=True, preprocess_video=True,
+                                      anomaly_threshold=30, stampede_threshold=35, max_bottlenecks=3):
     """
     Process CCTV footage to create an enhanced top-view simulation with advanced visualizations
     
@@ -1139,6 +1158,9 @@ def enhanced_process_cctv_to_top_view(video_path, output_path=None, calibration_
     - save_data: Whether to save area, perspective points, and detection data
     - load_saved_data: Whether to load previously saved data
     - preprocess_video: Whether to preprocess the video to standardize resolution
+    - anomaly_threshold: Threshold to identify bottlenecks when anomalies exceed this value
+    - stampede_threshold: Threshold to trigger stampede warning when anomalies exceed this value
+    - max_bottlenecks: Maximum number of bottlenecks to identify (default: 3)
     """
     # Preprocess video if requested to standardize resolution
     original_video_path = video_path
@@ -1183,8 +1205,15 @@ def enhanced_process_cctv_to_top_view(video_path, output_path=None, calibration_
     
     # Initialize anomaly detector for counter-flow detection with persistence
     print("Setting up Anomaly Detector...")
-    # Use angle_threshold=65 degrees, history_length=5 frames, and make anomalies persist for 60 frames
-    anomaly_detector = AnomalyDetector(angle_threshold=65, history_length=5, anomaly_persistence=30)
+    # Use angle_threshold=65 degrees, history_length=5 frames, anomaly_persistence=60 frames
+    # and anomaly_threshold for bottleneck detection (default: 30)
+    anomaly_detector = AnomalyDetector(angle_threshold=65, history_length=5, 
+                                      anomaly_persistence=60, anomaly_threshold=anomaly_threshold,
+                                      stampede_threshold=stampede_threshold,
+                                      max_bottlenecks=max_bottlenecks)
+    print(f"Anomaly threshold for bottleneck detection: {anomaly_threshold}")
+    print(f"Stampede warning threshold: {stampede_threshold}")
+    print(f"Maximum number of bottlenecks: {max_bottlenecks}")
     
     # Open video
     print(f"Opening video: {video_path}")
@@ -1457,6 +1486,15 @@ def enhanced_process_cctv_to_top_view(video_path, output_path=None, calibration_
         cv2.putText(frame_with_visualization, f"Density threshold: {current_density_threshold:.2f}", (width - 250, 60), 
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
         
+        # NEW: Project and draw bottleneck from top view to original frame if identified
+        if anomaly_detector.bottlenecks:
+            # Project bottleneck locations to original frame
+            original_bottlenecks = anomaly_detector.project_bottleneck_to_original(inv_homography)
+            if original_bottlenecks is not None:
+                # Draw bottlenecks on original frame
+                anomaly_detector.draw_bottleneck(frame_with_visualization, is_original_view=True, 
+                                                original_bottlenecks=original_bottlenecks)
+                
         # Add data saving indicator
         save_text = "Data Saving: ON" if current_save_data else "Data Saving: OFF"
         cv2.putText(frame_with_visualization, save_text, (width - 200, height - 50), 
@@ -1618,4 +1656,65 @@ def enhanced_process_cctv_to_top_view(video_path, output_path=None, calibration_
         "original": f"{base_path}_{source_video_name}_enhanced_original.mp4" if output_path else None,
         "density": f"{base_path}_{source_video_name}_enhanced_density.mp4" if output_path and crowd_estimator is not None else None
     }
+    
     return simulation_paths
+
+def parse_arguments():
+    """Parse command line arguments."""
+    parser = argparse.ArgumentParser(description='Crowd Simulation Enhancement Tool')
+    
+    # Input source options
+    parser.add_argument('--input_video', type=str, default=None, help='Path to the input video file')
+    parser.add_argument('--input_folder', type=str, default=None, help='Path to folder containing image sequence')
+    parser.add_argument('--enable_webcam', action='store_true', help='Use webcam as input source')
+    parser.add_argument('--webcam_id', type=int, default=0, help='Webcam device ID to use')
+    
+    # Processing options
+    parser.add_argument('--frame_skip', type=int, default=1, help='Process every Nth frame')
+    parser.add_argument('--use_tracker', action='store_true', help='Use object tracker for smoother detection')
+    parser.add_argument('--show_tracks', action='store_true', help='Show tracking lines for pedestrians')
+    parser.add_argument('--track_length', type=int, default=15, help='Length of tracking lines')
+    parser.add_argument('--perspective_transform', action='store_true', help='Apply perspective transform for top-down view')
+    parser.add_argument('--show_density', action='store_true', help='Show crowd density heatmap')
+    parser.add_argument('--perspective_file', type=str, default=None, help='Path to perspective transform points file')
+    parser.add_argument('--max_people', type=int, default=None, help='Maximum number of people to detect')
+    parser.add_argument('--anomaly_threshold', type=int, default=30, help='Threshold for identifying bottlenecks')
+    parser.add_argument('--stampede_threshold', type=int, default=35, help='Threshold for triggering stampede warnings')
+    parser.add_argument('--enable_preprocessing', action='store_true', help='Enable video preprocessing (compression/resizing)')
+    
+    # Output options
+    parser.add_argument('--output_video', type=str, default=None, help='Path to save output video')
+    parser.add_argument('--output_folder', type=str, default=None, help='Path to save output frames')
+    parser.add_argument('--display_scale', type=float, default=1.0, help='Scale factor for display windows')
+    parser.add_argument('--fps_overlay', action='store_true', help='Show FPS overlay on output')
+    
+    return parser.parse_args()
+
+def main():
+    """Main function to run the simulation enhancement."""
+    args = parse_arguments()
+    
+    # Input validation
+    if not args.input_video and not args.input_folder and not args.enable_webcam:
+        print("Error: No input source specified. Use --input_video, --input_folder, or --enable_webcam")
+        sys.exit(1)
+    
+    # Set up logging
+    setup_logging()
+    
+    # Initialize the detector
+    detector = PedestrianDetector(
+        confidence_threshold=0.4,
+        use_tracker=args.use_tracker
+    )
+    
+    # Initialize the anomaly detector with command-line threshold
+    anomaly_detector = AnomalyDetector(
+        anomaly_threshold=args.anomaly_threshold,
+        stampede_threshold=args.stampede_threshold
+    )
+    
+    # Initialize the density estimator
+    density_estimator = DensityEstimator()
+
+    # ... rest of the code ...

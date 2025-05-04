@@ -35,6 +35,12 @@ def main():
                         help='Maximum number of density points (default: 200)')
     parser.add_argument('--no-preprocess', action='store_true',
                         help='Disable video preprocessing/standardization (default: preprocessing enabled)')
+    parser.add_argument('--anomaly-threshold', type=int, default=30,
+                        help='Threshold for bottleneck detection when anomalies exceed this value (default: 30)')
+    parser.add_argument('--stampede-threshold', type=int, default=35,
+                        help='Threshold for stampede warning when anomalies exceed this value (default: 35)')
+    parser.add_argument('--max-bottlenecks', type=int, default=3,
+                        help='Maximum number of bottlenecks to identify (default: 3)')
     
     args = parser.parse_args()
     
@@ -70,6 +76,9 @@ def main():
     if args.enhanced:
         print(f"Density threshold: {args.density_threshold}")
         print(f"Max density points: {args.max_points}")
+        print(f"Anomaly threshold: {args.anomaly_threshold}")
+        print(f"Stampede threshold: {args.stampede_threshold}")
+        print(f"Max bottlenecks: {args.max_bottlenecks}")
     
     try:
         # Run the processing with appropriate function
@@ -84,7 +93,10 @@ def main():
                 csrnet_model_path=args.csrnet_weights,
                 density_threshold=args.density_threshold,
                 max_points=args.max_points,
-                preprocess_video=not args.no_preprocess
+                preprocess_video=not args.no_preprocess,
+                anomaly_threshold=args.anomaly_threshold,
+                stampede_threshold=args.stampede_threshold,
+                max_bottlenecks=args.max_bottlenecks
             )
         else:
             # Use the original function
@@ -95,7 +107,10 @@ def main():
                 use_tracking=not args.no_tracking,
                 yolo_model_size=args.model_size,
                 csrnet_model_path=args.csrnet_weights,
-                preprocess_video=not args.no_preprocess
+                preprocess_video=not args.no_preprocess,
+                anomaly_threshold=args.anomaly_threshold,
+                stampede_threshold=args.stampede_threshold,
+                max_bottlenecks=args.max_bottlenecks
             )
         
         if result:

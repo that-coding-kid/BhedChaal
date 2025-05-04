@@ -7,6 +7,7 @@ from pathlib import Path
 from density_estimation import CrowdDensityEstimator
 from person_detection import PersonDetector
 from person_detection import AreaManager
+from anomaly_detection import AnomalyDetector
 
 def get_perspective_transform(image, src_points=None, dst_size=(800, 600), area_manager=None):
     """
@@ -328,7 +329,8 @@ def create_top_view(frame, density_map, person_detector, homography, area_manage
 
 def process_cctv_to_top_view(video_path, output_path=None, calibration_image=None, src_points=None, 
                              use_tracking=True, yolo_model_size='x', csrnet_model_path=None,
-                             save_data=True, load_saved_data=True, preprocess_video=True):
+                             save_data=True, load_saved_data=True, preprocess_video=True,
+                             anomaly_threshold=30, stampede_threshold=35, max_bottlenecks=3):
     """
     Process CCTV footage to create a top-view simulation with crowd density estimation and YOLOv8 person detection
     
@@ -343,6 +345,9 @@ def process_cctv_to_top_view(video_path, output_path=None, calibration_image=Non
     - save_data: Whether to save area, perspective points, and detection data
     - load_saved_data: Whether to load previously saved data
     - preprocess_video: Whether to preprocess the video to standardize resolution
+    - anomaly_threshold: Threshold to identify bottlenecks when anomalies exceed this value
+    - stampede_threshold: Threshold to trigger stampede warning when anomalies exceed this value
+    - max_bottlenecks: Maximum number of bottlenecks to identify (default: 3)
     """
     # Preprocess video if requested to standardize resolution
     original_video_path = video_path
@@ -384,6 +389,16 @@ def process_cctv_to_top_view(video_path, output_path=None, calibration_image=Non
         print(f"Error setting up YOLOv8 person detector: {e}")
         print("Please make sure you have the ultralytics package installed and YOLOv8 weights available.")
         return None
+    
+    # Initialize anomaly detector for counter-flow detection
+    print("Setting up Anomaly Detector...")
+    anomaly_detector = AnomalyDetector(angle_threshold=65, history_length=5, 
+                                      anomaly_persistence=60, anomaly_threshold=anomaly_threshold,
+                                      stampede_threshold=stampede_threshold,
+                                      max_bottlenecks=max_bottlenecks)
+    print(f"Anomaly threshold for bottleneck detection: {anomaly_threshold}")
+    print(f"Stampede warning threshold: {stampede_threshold}")
+    print(f"Maximum number of bottlenecks: {max_bottlenecks}")
     
     # Open video
     print(f"Opening video: {video_path}")

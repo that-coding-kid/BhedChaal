@@ -26,27 +26,28 @@ class PersonDetector:
         - model_size: Size of YOLO model ('n', 's', 'm', 'l', 'x')
         - device: Device to run the model on ('cuda' or 'cpu')
         """
+        # Set up device
         if device is None:
             self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         else:
             self.device = device
         
-        print(f"Initializing YOLO11 on {self.device}...")
+        # Initialize YOLO model
+        print(f"Initializing YOLOv8 on {self.device}...")
         try:
-            # Use the Ultralytics YOLO model
-            self.model = YOLO(f"best_re_final.pt")
+            # Load custom trained model or fallback to standard model based on size
+            model_path = "best_re_final.pt"
+            self.model = YOLO(model_path)
+            self.model.to(self.device)
         except Exception as e:
-            print(f"Error loading YOLO11 model: {e}")
+            print(f"Error loading YOLOv8 model: {e}")
             print("Please check your installation and ensure the model is available.")
             raise
-        
-        # Set the model to the specified device
-        self.model.to(self.device)
         
         # Person class ID (0 for COCO dataset)
         self.person_class_id = 0
         
-        # For tracking people - now enabled by default
+        # Tracking setup
         self.tracker_enabled = True
         self.tracked_people = {}
         self.track_history = defaultdict(lambda: [])
@@ -60,14 +61,17 @@ class PersonDetector:
         self.id_counters = {}    # Count frames since ID was last seen
     
     def enable_tracking(self, enable=True):
-        """Enable or disable object tracking"""
+        """
+        Enable or disable object tracking
+        
+        Parameters:
+        - enable: Boolean to enable or disable tracking
+        """
         self.tracker_enabled = enable
         print(f"Object tracking {'enabled' if enable else 'disabled'}")
         
-        # If disabling tracking, we don't clear history anymore
-        # This allows us to keep IDs even when tracking is disabled
         if not enable:
-            print("Tracking disabled but IDs will still be maintained")
+            print("Tracking visualization disabled but IDs will still be maintained")
     
     def detect(self, frame):
         """
@@ -85,156 +89,172 @@ class PersonDetector:
         detections = []
         
         try:
-            # Always run YOLOv8 with tracking to get IDs, regardless of tracker_enabled setting
+            # Run YOLOv8 with tracking to get IDs
             results = self.model.track(frame, persist=True, classes=[self.person_class_id], verbose=False)
             
-            if len(results) > 0:
-                # Get the first result (only one image processed)
-                result = results[0]
+            if not results or len(results) == 0:
+                return detections, annotated_frame
                 
-                # Check if boxes exist
-                if not hasattr(result, 'boxes') or len(result.boxes) == 0:
-                    return detections, annotated_frame
-                
-                # Get IDs if available
-                track_ids = None
-                if hasattr(result.boxes, 'id') and result.boxes.id is not None:
-                    track_ids = result.boxes.id.int().cpu().tolist()
-                
-                # Extract boxes
-                boxes = result.boxes.xyxy.cpu().numpy()
-                confidences = result.boxes.conf.cpu().numpy()
-                classes = result.boxes.cls.cpu().numpy()
-                
-                # Update timeout counters for all existing IDs
-                for id_key in list(self.id_counters.keys()):
-                    self.id_counters[id_key] += 1
-                    # Remove IDs that haven't been seen for a while
-                    if self.id_counters[id_key] > self.id_timeout:
-                        del self.id_counters[id_key]
-                        if id_key in self.id_positions:
-                            del self.id_positions[id_key]
-                
-                # Process each detected person
-                for i, box in enumerate(boxes):
-                    class_id = int(classes[i])
-                    
-                    # Only process person class
-                    if class_id != self.person_class_id:
-                        continue
-                    
-                    # Get detection details
-                    x1, y1, x2, y2 = box
-                    confidence = confidences[i]
-                    
-                    # Skip low confidence detections
-                    if confidence < 0.1:
-                        continue
-                    
-                    # Get ID if available from tracker
-                    track_id = None
-                    if track_ids is not None:
-                        track_id = int(track_ids[i])
-                    
-                    # If no track ID is assigned yet by the tracker, assign our own temporary ID
-                    # or use previously assigned ID based on spatial proximity
-                    if track_id is None:
-                        center_x = (x1 + x2) / 2
-                        center_y = (y1 + y2) / 2
-                        
-                        # Find the closest existing ID
-                        closest_id = None
-                        min_distance = float('inf')
-                        
-                        for id_key, pos in self.id_positions.items():
-                            pos_x, pos_y = pos
-                            distance = ((center_x - pos_x) ** 2 + (center_y - pos_y) ** 2) ** 0.5
-                            # Only consider positions that are reasonably close (e.g., within 50 pixels)
-                            if distance < 50 and distance < min_distance:
-                                closest_id = id_key
-                                min_distance = distance
-                        
-                        if closest_id is not None:
-                            # Use the existing ID
-                            track_id = closest_id
-                            # Reset the timeout counter for this ID
-                            self.id_counters[track_id] = 0
-                        else:
-                            # Assign a new ID
-                            track_id = self.next_id
-                            self.next_id += 1
-                            # Initialize the timeout counter
-                            self.id_counters[track_id] = 0
-                        
-                        # Update the position for this ID
-                        self.id_positions[track_id] = (center_x, center_y)
-                    else:
-                        # If a track ID is already assigned by the tracker,
-                        # update its position and reset its timeout counter
-                        center_x = (x1 + x2) / 2
-                        center_y = (y1 + y2) / 2
-                        self.id_positions[track_id] = (center_x, center_y)
-                        self.id_counters[track_id] = 0
-                    
-                    # Add detection to list with ID
-                    detections.append([
-                        int(x1), int(y1), int(x2), int(y2), 
-                        float(confidence), 
-                        track_id
-                    ])
-                    
-                    # Update tracking history for this ID
-                    if track_id is not None:
-                        center_x = (x1 + x2) / 2
-                        center_y = (y1 + y2) / 2
-                        
-                        # Add to track history
-                        self.track_history[track_id].append((int(center_x), int(center_y)))
-                        
-                        # Keep only the last N points
-                        if len(self.track_history[track_id]) > self.max_track_history:
-                            self.track_history[track_id] = self.track_history[track_id][-self.max_track_history:]
-                    
-                    # Get color based on ID
-                    color = self._get_color_by_id(track_id) if track_id is not None else (0, 255, 0)
-                    
-                    # Draw detection on frame
-                    cv2.rectangle(annotated_frame, 
-                                (int(x1), int(y1)), 
-                                (int(x2), int(y2)), 
-                                color, 2)
-                    
-                    # Add ID text
-                    id_text = f"ID:{track_id}" if track_id is not None else "No ID"
-                    label = f"Person {id_text}: {confidence:.2f}"
-                    cv2.putText(annotated_frame, 
-                            label, 
-                            (int(x1), int(y1) - 10),
-                            cv2.FONT_HERSHEY_SIMPLEX, 
-                            0.5, color, 2)
-                
-                # Draw tracking lines if tracking visualization is enabled
-                if self.tracker_enabled:
-                    # Only draw tracking for currently visible IDs
-                    current_ids = [det[5] for det in detections if det[5] is not None]
-                    
-                    for track_id in current_ids:
-                        track = self.track_history.get(track_id, [])
-                        if len(track) > 1:
-                            color = self._get_color_by_id(track_id)
-                            for i in range(1, len(track)):
-                                cv2.line(annotated_frame, 
-                                        track[i-1], 
-                                        track[i], 
-                                        color, 2)
+            # Get the first result (only one image processed)
+            result = results[0]
             
+            # Check if boxes exist
+            if not hasattr(result, 'boxes') or len(result.boxes) == 0:
+                return detections, annotated_frame
+            
+            # Get IDs if available
+            track_ids = None
+            if hasattr(result.boxes, 'id') and result.boxes.id is not None:
+                track_ids = result.boxes.id.int().cpu().tolist()
+            
+            # Extract boxes, confidences, and classes
+            boxes = result.boxes.xyxy.cpu().numpy()
+            confidences = result.boxes.conf.cpu().numpy()
+            classes = result.boxes.cls.cpu().numpy()
+            
+            # Update timeout counters for all existing IDs
+            self._update_id_timeouts()
+            
+            # Process each detection
+            for i, box in enumerate(boxes):
+                # Only process person class (class_id = 0)
+                class_id = int(classes[i])
+                if class_id != self.person_class_id:
+                    continue
+                
+                # Get detection details
+                x1, y1, x2, y2 = box
+                confidence = confidences[i]
+                
+                # Skip low confidence detections
+                if confidence < 0.1:
+                    continue
+                
+                # Get or assign tracking ID
+                track_id = self._get_track_id(track_ids, i, x1, y1, x2, y2)
+                
+                # Add detection to list with ID
+                detections.append([
+                    int(x1), int(y1), int(x2), int(y2), 
+                    float(confidence), 
+                    track_id
+                ])
+                
+                # Update tracking history
+                self._update_track_history(track_id, x1, y1, x2, y2)
+                
+                # Visualize the detection on the frame
+                self._draw_detection(annotated_frame, x1, y1, x2, y2, confidence, track_id)
+            
+            # Draw tracking lines if enabled
+            if self.tracker_enabled:
+                self._draw_tracking_lines(annotated_frame)
+                
         except Exception as e:
             print(f"Error in detection: {e}")
             import traceback
             traceback.print_exc()
-            # Continue with empty detections
         
         return detections, annotated_frame
+    
+    def _update_id_timeouts(self):
+        """Update timeout counters for all existing IDs"""
+        for id_key in list(self.id_counters.keys()):
+            self.id_counters[id_key] += 1
+            # Remove IDs that haven't been seen for a while
+            if self.id_counters[id_key] > self.id_timeout:
+                del self.id_counters[id_key]
+                if id_key in self.id_positions:
+                    del self.id_positions[id_key]
+    
+    def _get_track_id(self, track_ids, idx, x1, y1, x2, y2):
+        """Get or assign a tracking ID for a detection"""
+        # If tracking ID is available from the model, use it
+        if track_ids is not None:
+            track_id = int(track_ids[idx])
+            if track_id is not None:
+                # Update position and reset timeout
+                center_x, center_y = (x1 + x2) / 2, (y1 + y2) / 2
+                self.id_positions[track_id] = (center_x, center_y)
+                self.id_counters[track_id] = 0
+                return track_id
+        
+        # Otherwise, assign our own ID based on spatial proximity
+        center_x, center_y = (x1 + x2) / 2, (y1 + y2) / 2
+        
+        # Find the closest existing ID
+        closest_id = None
+        min_distance = float('inf')
+        
+        for id_key, pos in self.id_positions.items():
+            pos_x, pos_y = pos
+            distance = ((center_x - pos_x) ** 2 + (center_y - pos_y) ** 2) ** 0.5
+            # Only consider positions that are close (within 50 pixels)
+            if distance < 50 and distance < min_distance:
+                closest_id = id_key
+                min_distance = distance
+        
+        if closest_id is not None:
+            # Use the existing ID
+            track_id = closest_id
+            # Reset the timeout counter
+            self.id_counters[track_id] = 0
+        else:
+            # Assign a new ID
+            track_id = self.next_id
+            self.next_id += 1
+            # Initialize the timeout counter
+            self.id_counters[track_id] = 0
+        
+        # Update the position for this ID
+        self.id_positions[track_id] = (center_x, center_y)
+        
+        return track_id
+    
+    def _update_track_history(self, track_id, x1, y1, x2, y2):
+        """Update the tracking history for an ID"""
+        if track_id is not None:
+            center_x = (x1 + x2) / 2
+            center_y = (y1 + y2) / 2
+            
+            # Add to track history
+            self.track_history[track_id].append((int(center_x), int(center_y)))
+            
+            # Keep only the last N points
+            if len(self.track_history[track_id]) > self.max_track_history:
+                self.track_history[track_id] = self.track_history[track_id][-self.max_track_history:]
+    
+    def _draw_detection(self, frame, x1, y1, x2, y2, confidence, track_id):
+        """Draw detection bounding box and ID on frame"""
+        # Get color based on ID
+        color = self._get_color_by_id(track_id) if track_id is not None else (0, 255, 0)
+        
+        # Draw bounding box
+        cv2.rectangle(frame, 
+                    (int(x1), int(y1)), 
+                    (int(x2), int(y2)), 
+                    color, 2)
+        
+        # Add ID text
+        id_text = f"ID:{track_id}" if track_id is not None else "No ID"
+        label = f"Person {id_text}: {confidence:.2f}"
+        cv2.putText(frame, 
+                label, 
+                (int(x1), int(y1) - 10),
+                cv2.FONT_HERSHEY_SIMPLEX, 
+                0.5, color, 2)
+    
+    def _draw_tracking_lines(self, frame):
+        """Draw tracking lines for visible people"""
+        # Only draw tracking for currently visible IDs
+        for track_id, track in self.track_history.items():
+            if len(track) > 1:
+                color = self._get_color_by_id(track_id)
+                for i in range(1, len(track)):
+                    cv2.line(frame, 
+                            track[i-1], 
+                            track[i], 
+                            color, 2)
     
     def _get_color_by_id(self, track_id):
         """Generate a unique color based on track ID"""

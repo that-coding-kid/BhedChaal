@@ -328,7 +328,7 @@ def create_top_view(frame, density_map, person_detector, homography, area_manage
 
 def process_cctv_to_top_view(video_path, output_path=None, calibration_image=None, src_points=None, 
                              use_tracking=True, yolo_model_size='x', csrnet_model_path=None,
-                             save_data=True, load_saved_data=True):
+                             save_data=True, load_saved_data=True, preprocess_video=True):
     """
     Process CCTV footage to create a top-view simulation with crowd density estimation and YOLOv8 person detection
     
@@ -342,9 +342,26 @@ def process_cctv_to_top_view(video_path, output_path=None, calibration_image=Non
     - csrnet_model_path: Path to CSRNet pre-trained weights (if None, use default)
     - save_data: Whether to save area, perspective points, and detection data
     - load_saved_data: Whether to load previously saved data
+    - preprocess_video: Whether to preprocess the video to standardize resolution
     """
+    # Preprocess video if requested to standardize resolution
+    original_video_path = video_path
+    processed_video = None
+    
+    if preprocess_video:
+        try:
+            from video_preprocessor import VideoPreprocessor
+            preprocessor = VideoPreprocessor(target_resolution=(1280, 720))
+            print(f"Preprocessing video: {video_path}")
+            processed_video = preprocessor.process_video(video_path)
+            if processed_video != video_path:
+                print(f"Video preprocessed to standardized resolution: {processed_video}")
+                video_path = processed_video
+        except Exception as e:
+            print(f"Warning: Video preprocessing failed ({str(e)}). Using original video.")
+    
     # Initialize area manager with current video path for data management
-    area_manager = AreaManager(video_path=video_path, save_dir="video_data")
+    area_manager = AreaManager(video_path=original_video_path, save_dir="video_data")
     
     # Initialize crowd density estimator
     print("Setting up Crowd Density Estimator...")
@@ -727,5 +744,15 @@ def process_cctv_to_top_view(video_path, output_path=None, calibration_image=Non
         object_count = len(os.listdir(os.path.join(area_manager.objects_dir)))
         density_count = len(os.listdir(os.path.join(area_manager.density_dir)))
         print(f"Data saved for {object_count} object detection frames and {density_count} density frames (every 20th frame).")
+    
+    # Clean up processed video if it was created
+    if preprocess_video and processed_video is not None and processed_video != original_video_path:
+        try:
+            from video_preprocessor import VideoPreprocessor
+            preprocessor = VideoPreprocessor()
+            preprocessor.cleanup()
+            print("Cleaned up temporary processed videos")
+        except Exception as e:
+            print(f"Warning: Failed to clean up processed video: {str(e)}")
         
     return base_path + "_top_view.mp4" if output_path else None

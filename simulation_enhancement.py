@@ -18,7 +18,7 @@ import colorsys
 
 def create_enhanced_top_view(frame, density_map, previous_density_map, person_detector, homography, area_manager, 
                             estimated_count, size=(800, 600), 
-                            density_threshold=0.2, max_density_points=200, show_flow=True,
+                            density_threshold=0.1, max_density_points=100, show_flow=True,
                             frame_number=None, save_data=False, anomaly_detector=None):
     """
     Create an enhanced top view visualization with transformed density map, tracking,
@@ -1122,10 +1122,9 @@ def create_flow_visualization(frame, density_map_current, density_map_previous, 
 def enhanced_process_cctv_to_top_view(video_path, output_path=None, calibration_image=None, 
                                       src_points=None, use_tracking=True, yolo_model_size='x', 
                                       csrnet_model_path=None, density_threshold=0.2, max_points=200,
-                                      save_data=True, load_saved_data=True):
+                                      save_data=True, load_saved_data=True, preprocess_video=True):
     """
-    Enhanced version of process_cctv_to_top_view that includes density points visualization,
-    flow analysis, and data saving
+    Process CCTV footage to create an enhanced top-view simulation with advanced visualizations
     
     Parameters:
     - video_path: Path to input CCTV video
@@ -1135,13 +1134,30 @@ def enhanced_process_cctv_to_top_view(video_path, output_path=None, calibration_
     - use_tracking: Whether to enable person tracking
     - yolo_model_size: Size of YOLO model ('n', 's', 'm', 'l', 'x')
     - csrnet_model_path: Path to CSRNet pre-trained weights (if None, use default)
-    - density_threshold: Threshold for showing density points (0.0-1.0)
-    - max_points: Maximum number of density points to display
+    - density_threshold: Threshold for density points
+    - max_points: Maximum number of density points
     - save_data: Whether to save area, perspective points, and detection data
     - load_saved_data: Whether to load previously saved data
+    - preprocess_video: Whether to preprocess the video to standardize resolution
     """
+    # Preprocess video if requested to standardize resolution
+    original_video_path = video_path
+    processed_video = None
+    
+    if preprocess_video:
+        try:
+            from video_preprocessor import VideoPreprocessor
+            preprocessor = VideoPreprocessor(target_resolution=(1280, 720))
+            print(f"Preprocessing video: {video_path}")
+            processed_video = preprocessor.process_video(video_path)
+            if processed_video != video_path:
+                print(f"Video preprocessed to standardized resolution: {processed_video}")
+                video_path = processed_video
+        except Exception as e:
+            print(f"Warning: Video preprocessing failed ({str(e)}). Using original video.")
+    
     # Initialize area manager with current video path for data management
-    area_manager = AreaManager(video_path=video_path, save_dir="video_data")
+    area_manager = AreaManager(video_path=original_video_path, save_dir="video_data")
     
     # Initialize crowd density estimator
     print("Setting up Crowd Density Estimator...")
@@ -1168,7 +1184,7 @@ def enhanced_process_cctv_to_top_view(video_path, output_path=None, calibration_
     # Initialize anomaly detector for counter-flow detection with persistence
     print("Setting up Anomaly Detector...")
     # Use angle_threshold=65 degrees, history_length=5 frames, and make anomalies persist for 60 frames
-    anomaly_detector = AnomalyDetector(angle_threshold=65, history_length=5, anomaly_persistence=60)
+    anomaly_detector = AnomalyDetector(angle_threshold=65, history_length=5, anomaly_persistence=30)
     
     # Open video
     print(f"Opening video: {video_path}")
@@ -1585,6 +1601,16 @@ def enhanced_process_cctv_to_top_view(video_path, output_path=None, calibration_
         object_count = len(os.listdir(os.path.join(area_manager.objects_dir)))
         density_count = len(os.listdir(os.path.join(area_manager.density_dir)))
         print(f"Data saved for {object_count} object detection frames and {density_count} density frames (every 20th frame).")
+    
+    # Clean up processed video if it was created
+    if preprocess_video and processed_video is not None and processed_video != original_video_path:
+        try:
+            from video_preprocessor import VideoPreprocessor
+            preprocessor = VideoPreprocessor()
+            preprocessor.cleanup()
+            print("Cleaned up temporary processed videos")
+        except Exception as e:
+            print(f"Warning: Failed to clean up processed video: {str(e)}")
     
     # Return the paths to the simulation videos
     simulation_paths = {

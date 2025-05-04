@@ -33,6 +33,8 @@ def main():
                         help='Threshold for density-based data points (default: 0.2)')
     parser.add_argument('--max-points', type=int, default=200,
                         help='Maximum number of density points (default: 200)')
+    parser.add_argument('--no-preprocess', action='store_true',
+                        help='Disable video preprocessing/standardization (default: preprocessing enabled)')
     
     args = parser.parse_args()
     
@@ -63,6 +65,7 @@ def main():
     print(f"Tracking: {'Disabled' if args.no_tracking else 'Enabled'}")
     print(f"YOLOv8 model size: {args.model_size}")
     print(f"Using enhanced visualization: {'Yes' if args.enhanced else 'No'}")
+    print(f"Video preprocessing: {'Disabled' if args.no_preprocess else 'Enabled'}")
     
     if args.enhanced:
         print(f"Density threshold: {args.density_threshold}")
@@ -78,7 +81,10 @@ def main():
                 args.calibration,
                 use_tracking=not args.no_tracking,
                 yolo_model_size=args.model_size,
-                csrnet_model_path=args.csrnet_weights
+                csrnet_model_path=args.csrnet_weights,
+                density_threshold=args.density_threshold,
+                max_points=args.max_points,
+                preprocess_video=not args.no_preprocess
             )
         else:
             # Use the original function
@@ -88,7 +94,8 @@ def main():
                 args.calibration,
                 use_tracking=not args.no_tracking,
                 yolo_model_size=args.model_size,
-                csrnet_model_path=args.csrnet_weights
+                csrnet_model_path=args.csrnet_weights,
+                preprocess_video=not args.no_preprocess
             )
         
         if result:

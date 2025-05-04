@@ -51,23 +51,42 @@ class Agent:
         self.acceleration = np.array([0.0, 0.0], dtype=float)
         
         # Physical properties
-        self.radius = 8 if not is_density_point else 12
-        self.mass = 1.0
-        self.color = (0, 100, 255) if not is_density_point else (0, 150, 255)
+        self.is_density_point = is_density_point
+        
+        if is_density_point:
+            # Density points are larger, distinctly colored
+            self.radius = 5
+            self.mass = 0.8
+            self.color = (50, 150, 255)  # Yellow
+            self.outline_color = (0, 0, 0)  # Black outline
+            self.outline_width = 1
+        else:
+            # Regular agents (from object detection)
+            self.radius = 5
+            self.mass = 1.0
+            self.color = (50, 150, 255)  # Blue
+            self.outline_color = (0, 0, 0)  # Black outline
+            self.outline_width = 1
+            
+            # Check if this is a secondary (upsampled) agent
+            if agent_id and "_2" in str(agent_id):
+                # Make upsampled agents slightly smaller and differently colored
+                self.radius = 5
+                self.color = (100, 180, 255)  # Lighter blue
         
         # Movement parameters
-        self.desired_speed = 1.5
+        self.desired_speed = 1.2
         self.desired_direction = np.array([1.0, 0.0], dtype=float)
         self.relaxation_time = 0.5
         
         # Panic-related attributes
         self.panic_level = 0.0  # [0.0-1.0]
-        self.panic_contagion_rate = 0.15
+        self.panic_contagion_rate = 0.1
         self.panic_decay_rate = 0.03
-        self.panic_speed_factor = 2.0
-        self.panic_force_factor = 2.0
-        self.panic_reaction_factor = 0.5
-        self.panic_awareness_radius = 50
+        self.panic_speed_factor = 1.5
+        self.panic_force_factor = 1.5
+        self.panic_reaction_factor = 0.4
+        self.panic_awareness_radius = 25
         
         # Surge wave attributes (for stampede simulation)
         self.surge_wave_radius = 0
@@ -81,7 +100,6 @@ class Agent:
         # State tracking
         self.panicked = False
         self.id = agent_id
-        self.is_density_point = is_density_point
         
         # Social force model parameters
         self.A = 2000.0  # Repulsion strength
@@ -194,27 +212,46 @@ class Agent:
 
     def update_panic_level(self, agents):
         """Update panic level based on proximity to other panicked agents"""
+        # Base decay rate - reduced for more persistent panic
+        decay_rate = self.panic_decay_rate * 0.5
+        
+        # Natural decay of panic (slower)
         if self.panic_level > 0:
-            # Natural decay of panic
-            self.panic_level = max(0, self.panic_level - self.panic_decay_rate)
+            self.panic_level = max(0, self.panic_level - decay_rate)
+        
+        # Panic propagation calculation
+        max_panic_increase = 0
+        
+        # Find panicked agents in proximity
+        for other in agents:
+            if other != self:
+                distance = np.linalg.norm(self.position - other.position)
+                
+                # Increased awareness radius for better propagation
+                awareness_radius = self.panic_awareness_radius * 1.5
+                
+                if distance < awareness_radius and other.panic_level > 0.2:
+                    # Calculate weight based on distance - inverse square for stronger nearby effect
+                    distance_weight = (1 - (distance / awareness_radius)) ** 2
+                    
+                    # Increase panic spread rate
+                    contagion_rate = self.panic_contagion_rate * 2.0
+                    
+                    # Calculate potential panic increase from this agent
+                    panic_increase = (contagion_rate * 
+                                   distance_weight * 
+                                   other.panic_level * 
+                                   (1.0 - self.panic_level * 0.5))  # Allow panic to continue increasing
+                    
+                    # Keep track of maximum increase from any single agent
+                    max_panic_increase = max(max_panic_increase, panic_increase)
+        
+        # Apply the maximum panic increase
+        if max_panic_increase > 0:
+            self.panic_level = min(1.0, self.panic_level + max_panic_increase)
             
-            # Check for panic propagation from nearby agents
-            for other in agents:
-                if other != self:
-                    distance = np.linalg.norm(self.position - other.position)
-                    if distance < self.panic_awareness_radius:
-                        # Calculate weight based on distance
-                        distance_weight = 1 - (distance / self.panic_awareness_radius)
-                        
-                        # Update panic level
-                        panic_increase = (self.panic_contagion_rate * 
-                                       distance_weight * 
-                                       other.panic_level * 
-                                       (1 - self.panic_level))
-                        self.panic_level = min(1.0, self.panic_level + panic_increase)
-                        
-                        # Update panic state
-                        self.panicked = self.panic_level > 0.6
+            # Update panicked state - lower threshold for panicked state
+            self.panicked = self.panic_level > 0.4  # Lower threshold to trigger panic behavior
 
     def update(self, agents, walking_areas):
         """Update agent position and velocity based on social forces"""
@@ -222,17 +259,30 @@ class Agent:
         net_force = np.array([0.0, 0.0])
         
         if self.panicked:
-            # Panicked behavior
+            # Panicked behavior - Flee from panic source
             # Calculate direction from panic center
             from_panic_center = self.position - self.surge_origin
             distance_from_panic = np.linalg.norm(from_panic_center)
             
             if distance_from_panic > 0.0001:
-                # Normalize direction and flee from panic source
+                # Normalize direction and flee from panic source with a stronger force
                 flee_direction = from_panic_center / distance_from_panic
-                flee_force = flee_direction * self.desired_speed * 3.0 * self.panic_level
+                # Increase flee force significantly to make agents spread out more
+                flee_force = flee_direction * self.desired_speed * 5.0 * self.panic_level
                 net_force += flee_force
                 
+                # Update desired direction to match flee direction for more consistent movement
+                self.desired_direction = flee_direction
+                
+            # Add random movement to simulate chaotic behavior
+            random_angle = np.random.normal(0, 0.5 * self.panic_level)
+            random_direction = np.array([
+                np.cos(random_angle),
+                np.sin(random_angle)
+            ])
+            random_force = random_direction * self.desired_speed * 2.0 * self.panic_level
+            net_force += random_force
+            
             # Add surge wave effect
             if self.surge_wave_radius > 0:
                 distance_from_center = np.linalg.norm(self.position - self.surge_origin)
@@ -255,24 +305,36 @@ class Agent:
         # Repulsive forces from other agents
         for other in agents:
             if other != self:
-                net_force += self.calculate_repulsive_force(other)
+                # Enhanced repulsion during panic to avoid clustering
+                if self.panicked:
+                    # Calculate stronger repulsion with other panicked agents to avoid clustering
+                    repulsion = self.calculate_enhanced_panic_repulsion(other)
+                else:
+                    repulsion = self.calculate_repulsive_force(other)
+                net_force += repulsion
         
         # Wall forces from walking area boundaries
         for area in walking_areas:
-            net_force += self.calculate_wall_force(area)
+            wall_force = self.calculate_wall_force(area)
+            # Enhance wall force during panic to prevent getting stuck at walls
+            if self.panicked:
+                wall_force *= (1.0 + 2.0 * self.panic_level)
+            net_force += wall_force
             
         # Calculate acceleration (F = ma)
         self.acceleration = net_force / self.mass
         
         # Update velocity (with clamping to prevent extreme values)
-        max_speed = self.desired_speed * (3.0 if self.panicked else 1.5)
+        # Higher max speed for panicked agents
+        max_speed = self.desired_speed * (4.0 if self.panicked else 1.5)
         self.velocity += self.acceleration * 0.1  # time step
         speed = np.linalg.norm(self.velocity)
         if speed > max_speed:
             self.velocity = (self.velocity / speed) * max_speed
             
-        # Apply friction to slow down agents to prevent perpetual motion
-        self.velocity *= 0.95
+        # Less friction for panicked agents to maintain higher speeds
+        friction = 0.9 if self.panicked else 0.95
+        self.velocity *= friction
         
         # Update position
         self.position += self.velocity * 0.1  # time step
@@ -283,31 +345,71 @@ class Agent:
 
     def draw(self, surface):
         """Draw the agent on the surface"""
-        # Color based on panic level
+        # Calculate color based on panic level
         if self.panic_level > 0:
-            # Gradual color change from blue to red based on panic level
-            red = int(self.color[2] + (255 - self.color[2]) * self.panic_level)
-            green = int(self.color[1] * (1 - self.panic_level))
-            blue = int(self.color[0] * (1 - self.panic_level))
+            # Gradual color change to red based on panic level
+            red = min(255, int(self.color[0] + (255 - self.color[0]) * self.panic_level))
+            green = max(0, int(self.color[1] * (1 - self.panic_level * 0.8)))
+            blue = max(0, int(self.color[2] * (1 - self.panic_level)))
             color = (red, green, blue)
         else:
             color = self.color
             
-        # Draw agent circle
-        pygame.draw.circle(surface, color, (int(self.position[0]), int(self.position[1])), self.radius)
+        # Draw agent outline first (slightly larger circle)
+        outline_radius = self.radius + self.outline_width
+        pygame.draw.circle(surface, self.outline_color, 
+                         (int(self.position[0]), int(self.position[1])), 
+                         outline_radius)
         
-        # Draw velocity vector
+        # Draw agent circle
+        pygame.draw.circle(surface, color, 
+                         (int(self.position[0]), int(self.position[1])), 
+                         self.radius)
+        
+        # Draw velocity vector if moving
         if np.linalg.norm(self.velocity) > 0.1:
-            end_pos = self.position + self.velocity * 0.5
+            end_pos = self.position + self.velocity * 0.8  # Slightly longer vector
             pygame.draw.line(surface, BLACK, 
-                            (int(self.position[0]), int(self.position[1])),
-                            (int(end_pos[0]), int(end_pos[1])), 2)
+                           (int(self.position[0]), int(self.position[1])),
+                           (int(end_pos[0]), int(end_pos[1])), 2)
             
         # Draw panic awareness radius when panicked
         if self.panicked:
-            pygame.draw.circle(surface, ORANGE, 
-                              (int(self.position[0]), int(self.position[1])), 
-                              int(self.panic_awareness_radius), 1)
+            pygame.draw.circle(surface, (255, 60, 0), 
+                             (int(self.position[0]), int(self.position[1])), 
+                             int(self.panic_awareness_radius), 1)
+
+    def calculate_enhanced_panic_repulsion(self, other):
+        """Calculate enhanced repulsive force between agents during panic"""
+        diff = self.position - other.position
+        distance = np.linalg.norm(diff)
+        
+        if distance == 0:
+            # Prevent division by zero
+            return np.array([0.0, 0.0])
+        
+        # Calculate the effective distance
+        effective_distance = distance - (self.radius + other.radius)
+        
+        if effective_distance < 0:
+            # Direct collision - stronger repulsion when panicked
+            direction = diff / distance
+            panic_factor = 3.0 * (self.panic_level + other.panic_level) / 2
+            return 2e5 * direction * (1.0 + panic_factor)
+        
+        # If both agents are panicked, increase repulsion to avoid clustering
+        if self.panicked and other.panicked:
+            panic_factor = 3.0 * (self.panic_level + other.panic_level) / 2
+            direction = diff / distance
+            force_magnitude = self.A * 2.0 * np.exp(-self.B * effective_distance * 0.5) * (1.0 + panic_factor)
+            return force_magnitude * direction
+        
+        # Normal repulsion based on social force model
+        direction = diff / distance
+        # Increase repulsion strength based on panic levels
+        panic_factor = 1.0 + self.panic_force_factor * (self.panic_level + other.panic_level) / 2
+        force_magnitude = self.A * np.exp(-self.B * effective_distance) * panic_factor
+        return force_magnitude * direction
 
 class HeatMap:
     """Heat map visualization for crowd density"""
@@ -319,6 +421,7 @@ class HeatMap:
         self.grid_height = height // cell_size + 1
         self.grid = np.zeros((self.grid_height, self.grid_width))
         self.kernel = self.gaussian_kernel()
+        self.alpha = 0.5  # Transparency level for the heat map
         
     def gaussian_kernel(self, size=5, sigma=1.0):
         """Create a gaussian kernel for smoothing"""
@@ -353,7 +456,10 @@ class HeatMap:
         self.grid = convolve(self.grid, self.kernel, mode='constant')
         
     def draw(self, surface):
-        """Draw heat map on surface"""
+        """Draw heat map on surface with transparency"""
+        # Create a transparent surface for the heat map
+        heat_surface = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
+        
         # Find max value for normalization
         max_val = np.max(self.grid)
         if max_val == 0:
@@ -369,6 +475,10 @@ class HeatMap:
                     # Get color based on value
                     color = self.get_interpolated_color(value)
                     
+                    # Add alpha channel for transparency (0-255)
+                    alpha_value = int(min(255, 120 + 135 * value))  # Higher values are more opaque
+                    color_with_alpha = (*color, alpha_value)
+                    
                     # Draw rectangle
                     rect = pygame.Rect(
                         x * self.cell_size, 
@@ -376,7 +486,10 @@ class HeatMap:
                         self.cell_size, 
                         self.cell_size
                     )
-                    pygame.draw.rect(surface, color, rect)
+                    pygame.draw.rect(heat_surface, color_with_alpha, rect)
+        
+        # Blit the heat map surface onto the main surface
+        surface.blit(heat_surface, (0, 0))
         
         # Draw legend
         self._draw_legend(surface)
@@ -412,18 +525,25 @@ class HeatMap:
         legend_y = 10
         
         # Draw legend background
-        pygame.draw.rect(surface, WHITE, (legend_x - 5, legend_y - 5, 
-                                         legend_width + 10, legend_height + 30))
-        pygame.draw.rect(surface, BLACK, (legend_x - 5, legend_y - 5, 
-                                         legend_width + 10, legend_height + 30), 1)
+        legend_bg = pygame.Surface((legend_width + 10, legend_height + 30), pygame.SRCALPHA)
+        pygame.draw.rect(legend_bg, (255, 255, 255, 200), (0, 0, legend_width + 10, legend_height + 30))
+        pygame.draw.rect(legend_bg, (0, 0, 0, 200), (0, 0, legend_width + 10, legend_height + 30), 1)
+        surface.blit(legend_bg, (legend_x - 5, legend_y - 5))
         
-        # Draw color gradient
+        # Draw color gradient with transparency
         for i in range(legend_height):
             value = 1 - (i / legend_height)
             color = self.get_interpolated_color(value)
-            pygame.draw.line(surface, color, 
-                            (legend_x, legend_y + i), 
-                            (legend_x + legend_width, legend_y + i))
+            # Add alpha to match the main visualization
+            alpha_value = int(min(255, 120 + 135 * value))
+            color_with_alpha = (*color, alpha_value)
+            
+            # Create a small surface for this line of the gradient
+            line_surface = pygame.Surface((legend_width, 1), pygame.SRCALPHA)
+            pygame.draw.line(line_surface, color_with_alpha, 
+                           (0, 0), 
+                           (legend_width, 0))
+            surface.blit(line_surface, (legend_x, legend_y + i))
             
         # Draw labels
         font = pygame.font.SysFont(None, 24)
@@ -629,12 +749,12 @@ class PanicSimulation:
                 with open(objects_file, 'r') as f:
                     objects_data = json.load(f)
                 
-                # Create agents from detected objects
+                # Create agents from detected objects - UPSAMPLING by creating 2 agents per object
                 for obj in objects_data.get("objects", []):
                     # Get position in top view
                     top_view = obj.get("top_view", [0, 0])
                     
-                    # Create agent
+                    # Create primary agent at exact position
                     agent = Agent(
                         x=top_view[0],
                         y=top_view[1],
@@ -653,9 +773,26 @@ class PanicSimulation:
                             agent.desired_direction = agent.velocity / vel_norm
                     
                     self.agents.append(agent)
+                    
+                    # Create second agent slightly offset (upsampling)
+                    offset_x = random.uniform(-15, 15)
+                    offset_y = random.uniform(-15, 15)
+                    second_agent = Agent(
+                        x=top_view[0] + offset_x,
+                        y=top_view[1] + offset_y,
+                        agent_id=f"{obj.get('id')}_2" if obj.get('id') else None,
+                        is_density_point=False
+                    )
+                    
+                    # Copy velocity and direction from first agent
+                    if "vector" in obj:
+                        second_agent.velocity = agent.velocity.copy()
+                        second_agent.desired_direction = agent.desired_direction.copy()
+                    
+                    self.agents.append(second_agent)
                 
                 objects_loaded = True
-                print(f"Loaded {len(objects_data.get('objects', []))} objects")
+                print(f"Loaded and upsampled {len(objects_data.get('objects', []))} objects to {len(objects_data.get('objects', [])) * 2} agents")
             except Exception as e:
                 print(f"Error loading objects: {e}")
         
@@ -665,8 +802,13 @@ class PanicSimulation:
                 with open(density_file, 'r') as f:
                     density_data = json.load(f)
                 
-                # Create agents from density points
-                for point in density_data.get("density_points", []):
+                # DOWNSAMPLING - Create agents from density points with filtering
+                density_points = density_data.get("density_points", [])
+                # Downsample by taking every other point to reduce density
+                downsampled_points = density_points[::2]  # Take every second point
+                
+                # Create agents from the downsampled points
+                for point in downsampled_points:
                     # Check if it's a valid density point
                     if "top_view" in point and point.get("type", "") == "density_point":
                         top_view = point.get("top_view", [0, 0])
@@ -688,7 +830,7 @@ class PanicSimulation:
                         self.agents.append(agent)
                 
                 density_loaded = True
-                print(f"Loaded {len(density_data.get('density_points', []))} density points")
+                print(f"Loaded and downsampled {len(density_points)} density points to {len(downsampled_points)} agents")
             except Exception as e:
                 print(f"Error loading density points: {e}")
         
@@ -725,20 +867,43 @@ class PanicSimulation:
         self.panic_source = (x, y)
         self.panic_active = True
         
+        # Count initially panicked agents
+        panic_count = 0
+        
         # Find agents within radius of panic source
         for agent in self.agents:
             distance = np.linalg.norm(agent.position - np.array([x, y]))
             if distance <= radius:
-                # Set panic level based on distance to source
-                panic_level = 1.0 - (distance / radius) * 0.5
+                # Set panic level based on distance to source - stronger initial panic
+                panic_level = min(1.0, 1.5 - (distance / radius) * 0.8)
                 agent.panic_level = max(agent.panic_level, panic_level)
-                agent.panicked = agent.panic_level > 0.6
+                agent.panicked = agent.panic_level > 0.4  # Lower threshold
                 
                 # Set surge origin
                 agent.surge_origin = np.array([x, y])
                 agent.surge_wave_radius = 0
+                
+                # Count panicked agents
+                panic_count += 1
         
-        print(f"Panic injected at ({x}, {y}) with radius {radius}")
+        # Force some minimum number of agents to panic if only a few were in radius
+        if panic_count < 5:
+            # Sort agents by distance to panic source
+            sorted_agents = sorted(
+                self.agents, 
+                key=lambda a: np.linalg.norm(a.position - np.array([x, y]))
+            )
+            
+            # Force at least 5 agents to panic
+            for agent in sorted_agents[:min(5, len(sorted_agents))]:
+                if agent.panic_level < 0.5:
+                    distance = np.linalg.norm(agent.position - np.array([x, y]))
+                    agent.panic_level = min(1.0, 1.0 - (distance / (radius * 2)) * 0.5)
+                    agent.panicked = True
+                    agent.surge_origin = np.array([x, y])
+                    agent.surge_wave_radius = 0
+        
+        print(f"Panic injected at ({x}, {y}) with radius {radius}, affecting {panic_count} agents")
         
     def propagate_panic(self):
         """Propagate panic through the crowd"""
@@ -873,11 +1038,7 @@ class PanicSimulation:
         # Clear screen
         self.screen.fill(WHITE)
         
-        # Draw heat map first if enabled
-        if self.show_heatmap:
-            self.heat_map.draw(self.screen)
-        
-        # Draw environment (roads and walking areas)
+        # Draw environment (roads and walking areas) first
         for road in self.roads:
             pygame.draw.polygon(self.screen, (200, 200, 255), road)
             pygame.draw.polygon(self.screen, BLUE, road, 2)
@@ -885,6 +1046,10 @@ class PanicSimulation:
         for area in self.walking_areas:
             pygame.draw.polygon(self.screen, (200, 255, 200), area)
             pygame.draw.polygon(self.screen, GREEN, area, 2)
+        
+        # Draw heat map above the walkable areas if enabled
+        if self.show_heatmap:
+            self.heat_map.draw(self.screen)
         
         # Draw agents
         for agent in self.agents:

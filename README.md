@@ -48,13 +48,14 @@ The BhedChaal system follows a sophisticated workflow:
 ## Enhanced Video Processing
 - SRGAN Frame Enhancement for improved detail in low-resolution footage
 - Video standardization for consistent analysis
-  ![image](https://github.com/user-attachments/assets/49c3dbe6-0aa8-4da7-bf55-81cc4101c1d6)
+![image](https://github.com/user-attachments/assets/49c3dbe6-0aa8-4da7-bf55-81cc4101c1d6)
 
 
 ## Spatial Transformation
 - CCTV to top-view conversion with interactive calibration
 - Save and reuse perspective points across sessions
 
+![image](https://github.com/user-attachments/assets/09cd8723-80e9-4df4-af02-f5d5dc24645c)
 
 
 ## Detection and Tracking
